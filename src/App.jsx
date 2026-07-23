@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const INDUSTRY_NAMES = [
   "电池",
@@ -74,11 +74,6 @@ const PERIOD_LABELS = {
   afternoon: "下午",
 };
 
-const EASTMONEY_ENDPOINTS = {
-  boardList: "https://push2.eastmoney.com/api/qt/clist/get",
-  minuteFlow: "https://push2.eastmoney.com/api/qt/stock/fflow/kline/get",
-};
-
 function createTradingTimes() {
   const times = [];
   const append = (startHour, startMinute, points) => {
@@ -135,109 +130,6 @@ function makeDemoSeries(boardType) {
     });
     return { code: `DEMO${index + 1}`, name, points };
   });
-}
-
-function jsonp(url, params, timeout = 12000) {
-  return new Promise((resolve, reject) => {
-    const callback = `__moneyflow_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const script = document.createElement("script");
-    const query = new URLSearchParams({ ...params, cb: callback });
-    const timer = window.setTimeout(() => finish(new Error("数据源响应超时")), timeout);
-
-    function finish(error, payload) {
-      window.clearTimeout(timer);
-      script.remove();
-      delete window[callback];
-      if (error) reject(error);
-      else resolve(payload);
-    }
-
-    window[callback] = (payload) => finish(null, payload);
-    script.onerror = () => finish(new Error("公开接口被网络策略拦截"));
-    script.src = `${url}?${query.toString()}`;
-    document.head.appendChild(script);
-  });
-}
-
-function parseMinuteFlow(payload) {
-  const rows = payload?.data?.klines;
-  if (!Array.isArray(rows) || rows.length === 0) return [];
-  const buckets = new Map();
-
-  rows.forEach((row) => {
-    const values = row.split(",");
-    const stamp = values[0] || "";
-    const time = stamp.slice(-5);
-    const [hour, minute] = time.split(":").map(Number);
-    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return;
-    const inSession =
-      (hour === 9 && minute >= 30) ||
-      hour === 10 ||
-      (hour === 11 && minute <= 30) ||
-      hour === 13 ||
-      hour === 14 ||
-      (hour === 15 && minute === 0);
-    if (!inSession) return;
-    const bucketMinute = Math.floor(minute / 5) * 5;
-    const bucket = `${String(hour).padStart(2, "0")}:${String(bucketMinute).padStart(2, "0")}`;
-    buckets.set(bucket, {
-      time: bucket,
-      main: Number(values[1]) / 1e8,
-      small: Number(values[2]) / 1e8,
-      medium: Number(values[3]) / 1e8,
-      large: Number(values[4]) / 1e8,
-      super: Number(values[5]) / 1e8,
-    });
-  });
-
-  return [...buckets.values()].filter((point) => Number.isFinite(point.main));
-}
-
-async function loadBoardCandidates(boardType, count) {
-  const fs = boardType === "industry" ? "m:90+t:2" : "m:90+t:3";
-  const base = {
-    pn: "1",
-    pz: String(Math.max(8, Math.ceil(count / 2) + 3)),
-    np: "1",
-    fltt: "2",
-    invt: "2",
-    fid: "f62",
-    fs,
-    fields: "f12,f14,f62",
-    ut: "bd1d9ddb04089700cf9c27f6f7426281",
-  };
-  const [positive, negative] = await Promise.all([
-    jsonp(EASTMONEY_ENDPOINTS.boardList, { ...base, po: "1" }),
-    jsonp(EASTMONEY_ENDPOINTS.boardList, { ...base, po: "0" }),
-  ]);
-  const rows = [...(positive?.data?.diff || []), ...(negative?.data?.diff || [])];
-  const deduped = [...new Map(rows.map((row) => [row.f12, row])).values()];
-  return deduped
-    .filter((row) => row.f12 && row.f14)
-    .sort((a, b) => Math.abs(Number(b.f62) || 0) - Math.abs(Number(a.f62) || 0))
-    .slice(0, count);
-}
-
-async function loadLiveSeries(boardType, count) {
-  const candidates = await loadBoardCandidates(boardType, count);
-  const settled = await Promise.allSettled(
-    candidates.map(async (board) => {
-      const payload = await jsonp(EASTMONEY_ENDPOINTS.minuteFlow, {
-        secid: `90.${board.f12}`,
-        lmt: "0",
-        klt: "1",
-        fields1: "f1,f2,f3,f7",
-        fields2: "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65",
-        ut: "b2884a393a59ad64002292a3e90d46a5",
-      });
-      const points = parseMinuteFlow(payload);
-      if (!points.length) throw new Error(`${board.f14}暂无分钟数据`);
-      return { code: board.f12, name: board.f14, points };
-    }),
-  );
-  const series = settled.filter((item) => item.status === "fulfilled").map((item) => item.value);
-  if (series.length < Math.min(6, count)) throw new Error("可用板块分钟数据不足");
-  return series;
 }
 
 function formatYi(value, signed = false) {
@@ -396,7 +288,8 @@ function DataMethodDialog({ open, onClose }) {
           <li>分钟资金：对 <code>90.BKxxxx</code> 请求 <code>stock/fflow/kline/get</code>，参数 <code>klt=1</code>。</li>
           <li>5 分钟采样：数据是日内累计值，每个 5 分钟桶取最后一条；不要把 1 分钟累计值相加。</li>
           <li>字段：<code>f51</code> 时间，<code>f52</code> 主力，<code>f53</code> 小单，<code>f54</code> 中单，<code>f55</code> 大单，<code>f56</code> 超大单；金额单位元。</li>
-          <li>生产化：服务端代理、并发限制、失败重试、按交易日落库，并记录源时间和缓存时间。</li>
+          <li>本地服务：后台每分钟采集，原始分钟数据写入 DuckDB；采集器会限制并发、重试备用域名并记录每次运行结果。</li>
+          <li>前端只读取本地 <code>/api/flows</code>，每 60 秒自动刷新；测试样本不会写入真实数据库。</li>
         </ol>
         <div className="formula-block">
           <code>flow_5m[sector, bucket] = last(flow_1m.cumulative_value)</code>
@@ -414,30 +307,54 @@ export function App() {
   const [topN, setTopN] = useState(18);
   const [mode, setMode] = useState("demo");
   const [liveSeries, setLiveSeries] = useState([]);
-  const [status, setStatus] = useState({ state: "demo", message: "演示数据 · 未连接实时行情" });
+  const [status, setStatus] = useState({ state: "loading", message: "正在连接本地 DuckDB 服务…" });
   const [updatedAt, setUpdatedAt] = useState("--:--");
   const [activeName, setActiveName] = useState("");
   const [methodOpen, setMethodOpen] = useState(false);
   const demoSeries = useMemo(() => makeDemoSeries(boardType), [boardType]);
 
-  const refreshLive = async () => {
-    setStatus({ state: "loading", message: "正在读取东方财富公开行情…" });
+  const loadFromDatabase = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setStatus({ state: "loading", message: "正在读取本地 5 分钟聚合数据…" });
     try {
-      const data = await loadLiveSeries(boardType, topN);
-      setLiveSeries(data);
-      setMode("live");
-      setUpdatedAt(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
-      setStatus({ state: "live", message: "公开行情已连接 · 1 分钟累计值重采样为 5 分钟" });
+      const query = new URLSearchParams({ boardType, flowType, limit: String(topN), tradeDate: "latest" });
+      const response = await fetch(`/api/flows?${query}`);
+      if (!response.ok) throw new Error(`本地 API ${response.status}`);
+      const payload = await response.json();
+      if (payload.series?.length) {
+        setLiveSeries(payload.series);
+        setMode("live");
+        setUpdatedAt(`${payload.meta.tradeDate} ${payload.meta.latestMinute}`);
+        setStatus({ state: "live", message: "DuckDB 已连接 · SQL 5分钟聚合 · 每60秒自动刷新" });
+      } else {
+        setLiveSeries([]);
+        setMode("demo");
+        setUpdatedAt("等待首批数据");
+        setStatus({ state: "fallback", message: "DuckDB 暂无真实分钟数据 · 当前显示演示曲线" });
+      }
     } catch (error) {
       setMode("demo");
-      setStatus({ state: "fallback", message: `${error.message || "实时接口不可用"} · 已回退演示数据` });
+      setLiveSeries([]);
+      setStatus({ state: "fallback", message: `${error.message || "本地服务不可用"} · 当前显示演示曲线` });
+    }
+  }, [boardType, flowType, topN]);
+
+  const refreshLive = async () => {
+    setStatus({ state: "loading", message: "后台正在立即采集并写入 DuckDB…" });
+    try {
+      const response = await fetch("/api/collect", { method: "POST" });
+      const summary = await response.json();
+      if (!response.ok) throw new Error(summary.error || `采集 API ${response.status}`);
+      await loadFromDatabase();
+    } catch (error) {
+      setStatus({ state: "fallback", message: `${error.message || "采集失败"} · 已保留数据库中的最近数据` });
     }
   };
 
   useEffect(() => {
-    if (mode === "live") refreshLive();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boardType]);
+    void loadFromDatabase();
+    const timer = window.setInterval(() => void loadFromDatabase({ silent: true }), 60_000);
+    return () => window.clearInterval(timer);
+  }, [loadFromDatabase]);
 
   const sourceSeries = mode === "live" && liveSeries.length ? liveSeries : demoSeries;
   const ranked = useMemo(() => {
@@ -478,7 +395,7 @@ export function App() {
         <div className="header-actions">
           <button type="button" className="text-button" onClick={() => setMethodOpen(true)}>数据口径</button>
           <button type="button" className="refresh-button" onClick={refreshLive} disabled={status.state === "loading"}>
-            {status.state === "loading" ? "连接中…" : "连接实时数据"}
+            {status.state === "loading" ? "采集中…" : "立即采集"}
           </button>
         </div>
       </header>
@@ -486,7 +403,7 @@ export function App() {
       <section className="page-heading">
         <div>
           <p className="date-line"><span>{date}</span> 板块资金流向</p>
-          <p className="subtitle">5 分钟级 · 累计净流入 · 红色净流入 / 绿色净流出</p>
+          <p className="subtitle">每分钟后台采集 · DuckDB 落库 · 5 分钟聚合 · 前端自动刷新</p>
         </div>
         <div className={`source-status status-${status.state}`}>
           <span className="status-dot" />
@@ -525,7 +442,7 @@ export function App() {
             <option value="24">24 个</option>
           </select>
         </label>
-        <div className="updated-at">源数据时间 <strong>{mode === "live" ? updatedAt : "演示样本"}</strong></div>
+        <div className="updated-at">最新源分钟 <strong>{mode === "live" ? updatedAt : updatedAt}</strong></div>
       </section>
 
       <section className="metric-strip" aria-label="资金流摘要">
@@ -575,7 +492,7 @@ export function App() {
       </section>
 
       <footer>
-        <p>数据路径：东方财富公开行情页 / push2；公开网页接口可能调整或限流，生产使用请评估授权、稳定性与合规要求。</p>
+        <p>本地链路：东方财富公开行情 → Node 采集器 → DuckDB 分钟明细 → SQL 5分钟视图 → 前端60秒轮询。</p>
         <p>本页面不构成投资建议。资金流为数据商统计口径，不是交易所官方资金进出。</p>
       </footer>
 

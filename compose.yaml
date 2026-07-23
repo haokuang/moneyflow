@@ -1,0 +1,42 @@
+name: moneyflow
+
+services:
+  moneyflow:
+    build:
+      context: .
+      target: runtime
+    image: moneyflow:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${MONEYFLOW_PORT:-4173}:4173"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 4173
+      TZ: Asia/Shanghai
+      MONEYFLOW_DATA_DIR: /app/data
+      COLLECT_INTERVAL_MS: ${COLLECT_INTERVAL_MS:-60000}
+      BOARD_TYPES: ${BOARD_TYPES:-industry,concept}
+      BOARDS_PER_SIDE: ${BOARDS_PER_SIDE:-15}
+      FETCH_CONCURRENCY: ${FETCH_CONCURRENCY:-6}
+      REQUEST_TIMEOUT_MS: ${REQUEST_TIMEOUT_MS:-10000}
+    volumes:
+      - moneyflow_data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    stop_grace_period: 20s
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4173/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  moneyflow_data:
