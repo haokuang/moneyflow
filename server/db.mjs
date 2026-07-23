@@ -193,6 +193,26 @@ export class MoneyflowDatabase {
     `, run));
   }
 
+  async getTradeDates(boardType, limit = 250) {
+    const safeLimit = Math.min(1000, Math.max(1, Number(limit) || 250));
+    return this.enqueue(async () => {
+      const reader = await this.connection.runAndReadAll(`
+        SELECT
+          trade_date AS tradeDate,
+          max(minute) AS latestMinute,
+          max(collected_at) AS collectedAt,
+          cast(count(*) AS INTEGER) AS rowCount,
+          cast(count(DISTINCT code) AS INTEGER) AS sectorCount
+        FROM minute_flow
+        WHERE board_type = $boardType
+        GROUP BY trade_date
+        ORDER BY trade_date DESC
+        LIMIT $limit
+      `, { boardType, limit: safeLimit });
+      return { dates: reader.getRowObjectsJson() };
+    });
+  }
+
   async getFlowSeries({
     boardType,
     flowType = "main",

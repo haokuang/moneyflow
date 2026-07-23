@@ -145,6 +145,12 @@ function formatYi(value, signed = false) {
   return `${prefix}${value.toFixed(Math.abs(value) >= 10 ? 1 : 2)}亿`;
 }
 
+function formatTradeDateLabel(tradeDate) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(tradeDate || "");
+  if (match) return `${Number(match[2])}月${Number(match[3])}日`;
+  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(new Date());
+}
+
 function filterPoints(points, period) {
   if (period === "morning") return points.filter((point) => point.time < "12:00");
   if (period === "afternoon") return points.filter((point) => point.time >= "12:00");
@@ -314,13 +320,34 @@ export function App() {
   const [interval, setInterval] = useState("5m");
   const [period, setPeriod] = useState("full-day");
   const [topN, setTopN] = useState(18);
+  const [tradeDate, setTradeDate] = useState("latest");
+  const [tradeDates, setTradeDates] = useState([]);
   const [mode, setMode] = useState("demo");
   const [liveSeries, setLiveSeries] = useState([]);
   const [status, setStatus] = useState({ state: "loading", message: "正在连接本地 DuckDB 服务…" });
-  const [updatedAt, setUpdatedAt] = useState("--:--");
   const [activeName, setActiveName] = useState("");
   const [methodOpen, setMethodOpen] = useState(false);
   const demoSeries = useMemo(() => makeDemoSeries(boardType, interval), [boardType, interval]);
+  const selectedTradeDate = tradeDate === "latest"
+    ? tradeDates[0]?.tradeDate || "latest"
+    : tradeDate;
+
+  const loadTradeDates = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/trade-dates?boardType=${boardType}`);
+      if (!response.ok) throw new Error(`交易日 API ${response.status}`);
+      const payload = await response.json();
+      const dates = payload.dates || [];
+      setTradeDates(dates);
+      setTradeDate((current) => (
+        current === "latest" || dates.some((item) => item.tradeDate === current)
+          ? current
+          : "latest"
+      ));
+    } catch {
+      return;
+    }
+  }, [boardType]);
 
   const loadFromDatabase = useCallback(async ({ silent = false } = {}) => {
     if (!silent) {
@@ -335,7 +362,7 @@ export function App() {
         flowType,
         interval,
         limit: String(topN),
-        tradeDate: "latest",
+        tradeDate,
       });
       const response = await fetch(`/api/flows?${query}`);
       if (!response.ok) throw new Error(`本地 API ${response.status}`);
@@ -343,23 +370,21 @@ export function App() {
       if (payload.series?.length) {
         setLiveSeries(payload.series);
         setMode("live");
-        setUpdatedAt(`${payload.meta.tradeDate} ${payload.meta.latestMinute}`);
         setStatus({
           state: "live",
-          message: `DuckDB 已连接 · ${interval === "1m" ? "分钟明细" : "SQL 5分钟聚合"} · 每60秒自动刷新`,
+          message: `DuckDB 已连接 · ${interval === "1m" ? "分钟明细" : "SQL 5分钟聚合"} · 数据至 ${payload.meta.latestMinute} · 每60秒自动刷新`,
         });
       } else {
         setLiveSeries([]);
         setMode("demo");
-        setUpdatedAt("等待首批数据");
-        setStatus({ state: "fallback", message: "DuckDB 暂无真实分钟数据 · 当前显示演示曲线" });
+        setStatus({ state: "fallback", message: "所选日期暂无真实分钟数据 · 当前显示演示曲线" });
       }
     } catch (error) {
       setMode("demo");
       setLiveSeries([]);
       setStatus({ state: "fallback", message: `${error.message || "本地服务不可用"} · 当前显示演示曲线` });
     }
-  }, [boardType, flowType, interval, topN]);
+  }, [boardType, flowType, interval, topN, tradeDate]);
 
   const refreshLive = async () => {
     setStatus({ state: "loading", message: "后台正在立即采集并写入 DuckDB…" });
@@ -367,11 +392,18 @@ export function App() {
       const response = await fetch("/api/collect", { method: "POST" });
       const summary = await response.json();
       if (!response.ok) throw new Error(summary.error || `采集 API ${response.status}`);
+      await loadTradeDates();
       await loadFromDatabase();
     } catch (error) {
       setStatus({ state: "fallback", message: `${error.message || "采集失败"} · 已保留数据库中的最近数据` });
     }
   };
+
+  useEffect(() => {
+    void loadTradeDates();
+    const timer = window.setInterval(() => void loadTradeDates(), 60_000);
+    return () => window.clearInterval(timer);
+  }, [loadTradeDates]);
 
   useEffect(() => {
     void loadFromDatabase();
@@ -400,10 +432,7 @@ export function App() {
     };
   }, [ranked]);
 
-  const date = new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" })
-    .format(new Date())
-    .replace("/", "月")
-    .replace(/^0/, "") + "日";
+  const date = formatTradeDateLabel(selectedTradeDate);
 
   return (
     <main className="dashboard-shell">
@@ -440,9 +469,25 @@ export function App() {
       <section className="control-strip" aria-label="图表筛选器">
         <label>
           板块体系
-          <select value={boardType} onChange={(event) => setBoardType(event.target.value)}>
+          <select
+            value={boardType}
+            onChange={(event) => {
+              setBoardType(event.target.value);
+              setTradeDate("latest");
+            }}
+          >
             <option value="industry">东财行业</option>
             <option value="concept">东财概念</option>
+          </select>
+        </label>
+        <label className="date-control">
+          交易日期
+          <select value={selectedTradeDate} onChange={(event) => setTradeDate(event.target.value)}>
+            {tradeDates.length ? tradeDates.map((item, index) => (
+              <option key={item.tradeDate} value={item.tradeDate}>
+                {item.tradeDate}{index === 0 ? "（最新）" : ""}
+              </option>
+            )) : <option value="latest">最新交易日</option>}
           </select>
         </label>
         <label>
@@ -481,7 +526,6 @@ export function App() {
             <option value="24">24 个</option>
           </select>
         </label>
-        <div className="updated-at">最新源分钟 <strong>{mode === "live" ? updatedAt : updatedAt}</strong></div>
       </section>
 
       <section className="metric-strip" aria-label="资金流摘要">

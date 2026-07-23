@@ -44,6 +44,10 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === "/api/status") {
       return sendJson(response, 200, { database: await database.getStatus(), collector: collector.getStatus() });
     }
+    if (url.pathname === "/api/trade-dates" && request.method === "GET") {
+      const boardType = url.searchParams.get("boardType") === "concept" ? "concept" : "industry";
+      return sendJson(response, 200, await database.getTradeDates(boardType));
+    }
     if (url.pathname === "/api/flows" && request.method === "GET") {
       const boardType = url.searchParams.get("boardType") === "concept" ? "concept" : "industry";
       const flowType = url.searchParams.get("flowType") || "main";

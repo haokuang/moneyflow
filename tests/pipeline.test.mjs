@@ -25,8 +25,8 @@ test("persists one-minute rows and aggregates each five-minute bucket with last,
       { boardType: "industry", code: "BK1", name: "板块一", snapshotFlowYuan: 600000000 },
       { boardType: "industry", code: "BK2", name: "板块二", snapshotFlowYuan: -200000000 },
     ]);
-    const mk = (code, name, minute, main) => ({
-      tradeDate: "2026-07-22",
+    const mk = (code, name, minute, main, tradeDate = "2026-07-22") => ({
+      tradeDate,
       boardType: "industry",
       code,
       name,
@@ -45,6 +45,8 @@ test("persists one-minute rows and aggregates each five-minute bucket with last,
       mk("BK1", "板块一", "09:39", 600000000),
       mk("BK2", "板块二", "09:30", -100000000),
       mk("BK2", "板块二", "09:34", -200000000),
+      mk("BK1", "板块一", "09:30", 80000000, "2026-07-21"),
+      mk("BK2", "板块二", "09:30", -50000000, "2026-07-21"),
     ]);
     const fiveMinute = await database.getFlowSeries({
       boardType: "industry",
@@ -75,9 +77,15 @@ test("persists one-minute rows and aggregates each five-minute bucket with last,
     assert.equal(oneMinute.meta.interval, "1m");
     assert.equal(oneMinute.meta.latestMinute, "09:39");
 
+    const tradeDates = await database.getTradeDates("industry");
+    assert.deepEqual(tradeDates.dates.map((item) => item.tradeDate), ["2026-07-22", "2026-07-21"]);
+    assert.equal(tradeDates.dates[0].latestMinute, "09:39");
+    assert.equal(tradeDates.dates[0].rowCount, 6);
+    assert.equal(tradeDates.dates[0].sectorCount, 2);
+
     const status = await database.getStatus();
     assert.equal(status.sectorCount, 2);
-    assert.equal(status.minuteRowCount, 6);
+    assert.equal(status.minuteRowCount, 8);
   } finally {
     await database.close();
     await fs.rm(tempDir, { recursive: true, force: true });

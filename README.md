@@ -87,6 +87,7 @@ docker run -d --name moneyflow -p 4173:4173 -v moneyflow_data:/app/data moneyflo
 
 - `GET /api/health`：服务和采集器状态
 - `GET /api/status`：DuckDB 行数、最新交易日、最后一次采集结果
+- `GET /api/trade-dates?boardType=industry`：已入库交易日列表，供前端日期选择
 - `GET /api/flows?boardType=industry&flowType=main&interval=1m&limit=18`：1分钟曲线
 - `GET /api/flows?boardType=industry&flowType=main&interval=5m&limit=18`：5分钟曲线（默认）
 - `POST /api/collect`：手动触发一次采集

@@ -199,7 +199,7 @@ select:focus-visible {
   padding: 14px 0;
   display: flex;
   align-items: flex-end;
-  gap: 18px;
+  gap: 14px;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
 }
@@ -213,13 +213,17 @@ select:focus-visible {
 }
 
 .control-strip select {
-  min-width: 132px;
+  min-width: 124px;
   height: 36px;
   border: 1px solid #d8dce2;
   border-radius: 0;
   background: #fff;
   color: var(--ink);
   padding: 0 28px 0 10px;
+}
+
+.date-control select {
+  min-width: 154px;
 }
 
 .granularity-control {
@@ -263,19 +267,6 @@ select:focus-visible {
   background: var(--ink);
   color: #fff;
   font-weight: 700;
-}
-
-.updated-at {
-  margin-left: auto;
-  padding-bottom: 8px;
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.updated-at strong {
-  color: var(--ink);
-  margin-left: 6px;
 }
 
 .metric-strip {
@@ -646,10 +637,6 @@ code {
     min-width: 0;
   }
 
-  .updated-at {
-    margin-left: 0;
-  }
-
   .metric-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -704,10 +691,6 @@ code {
 
   .control-strip {
     grid-template-columns: 1fr 1fr;
-  }
-
-  .updated-at {
-    grid-column: 1 / -1;
   }
 
   .metric-strip > div {
