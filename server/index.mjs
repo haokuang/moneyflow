@@ -49,7 +49,14 @@ const server = http.createServer(async (request, response) => {
       const flowType = url.searchParams.get("flowType") || "main";
       const limit = Number(url.searchParams.get("limit") || 18);
       const tradeDate = url.searchParams.get("tradeDate") || "latest";
-      return sendJson(response, 200, await database.getFlowSeries({ boardType, flowType, limit, tradeDate }));
+      const interval = url.searchParams.get("interval") === "1m" ? "1m" : "5m";
+      return sendJson(response, 200, await database.getFlowSeries({
+        boardType,
+        flowType,
+        limit,
+        tradeDate,
+        interval,
+      }));
     }
     if (url.pathname === "/api/collect" && request.method === "POST") {
       return sendJson(response, 200, await collector.collect("manual"));

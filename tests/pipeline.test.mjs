@@ -46,9 +46,35 @@ test("persists one-minute rows and aggregates each five-minute bucket with last,
       mk("BK2", "板块二", "09:30", -100000000),
       mk("BK2", "板块二", "09:34", -200000000),
     ]);
-    const result = await database.getFlowSeries({ boardType: "industry", flowType: "main", limit: 2, tradeDate: "2026-07-22" });
-    const first = result.series.find((series) => series.code === "BK1");
-    assert.deepEqual(first.points.map((point) => [point.time, point.main]), [["09:30", 3], ["09:35", 6]]);
+    const fiveMinute = await database.getFlowSeries({
+      boardType: "industry",
+      flowType: "main",
+      limit: 2,
+      tradeDate: "2026-07-22",
+      interval: "5m",
+    });
+    const fiveMinuteFirst = fiveMinute.series.find((series) => series.code === "BK1");
+    assert.deepEqual(fiveMinuteFirst.points.map((point) => [point.time, point.main]), [["09:30", 3], ["09:35", 6]]);
+    assert.equal(fiveMinute.meta.interval, "5m");
+    assert.equal(fiveMinute.meta.latestMinute, "09:39");
+
+    const oneMinute = await database.getFlowSeries({
+      boardType: "industry",
+      flowType: "main",
+      limit: 2,
+      tradeDate: "2026-07-22",
+      interval: "1m",
+    });
+    const oneMinuteFirst = oneMinute.series.find((series) => series.code === "BK1");
+    assert.deepEqual(oneMinuteFirst.points.map((point) => [point.time, point.main]), [
+      ["09:30", 1],
+      ["09:34", 3],
+      ["09:35", 4],
+      ["09:39", 6],
+    ]);
+    assert.equal(oneMinute.meta.interval, "1m");
+    assert.equal(oneMinute.meta.latestMinute, "09:39");
+
     const status = await database.getStatus();
     assert.equal(status.sectorCount, 2);
     assert.equal(status.minuteRowCount, 6);

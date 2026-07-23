@@ -74,22 +74,27 @@ const PERIOD_LABELS = {
   afternoon: "下午",
 };
 
-function createTradingTimes() {
+const INTERVAL_LABELS = {
+  "1m": "1 分钟",
+  "5m": "5 分钟",
+};
+
+function createTradingTimes(interval) {
+  const stepMinutes = interval === "1m" ? 1 : 5;
   const times = [];
-  const append = (startHour, startMinute, points) => {
-    for (let i = 0; i < points; i += 1) {
-      const total = startHour * 60 + startMinute + i * 5;
+  const append = (startHour, startMinute, endHour, endMinute) => {
+    const start = startHour * 60 + startMinute;
+    const end = endHour * 60 + endMinute;
+    for (let total = start; total <= end; total += stepMinutes) {
       times.push(
         `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`,
       );
     }
   };
-  append(9, 30, 25);
-  append(13, 0, 25);
+  append(9, 30, 11, 30);
+  append(13, 0, 15, 0);
   return times;
 }
-
-const ALL_TIMES = createTradingTimes();
 
 function seededNoise(seed) {
   let value = seed % 2147483647;
@@ -103,18 +108,21 @@ function stringSeed(value) {
   return [...value].reduce((acc, char) => (acc * 31 + char.charCodeAt(0)) >>> 0, 2166136261);
 }
 
-function makeDemoSeries(boardType) {
+function makeDemoSeries(boardType, interval) {
   const names = boardType === "industry" ? INDUSTRY_NAMES : CONCEPT_NAMES;
+  const times = createTradingTimes(interval);
+  const stepScale = interval === "1m" ? 0.2 : 1;
   return names.map((name, index) => {
     const random = seededNoise(stringSeed(`${boardType}-${name}`));
     const direction = index < 7 ? 1 : index > names.length - 9 ? -1 : random() > 0.58 ? 1 : -1;
     const magnitude = 0.4 + Math.pow(index < 7 ? 8 - index : index / names.length, 1.35) * 1.8;
     let main = 0;
-    const points = ALL_TIMES.map((time, pointIndex) => {
-      const openPulse = pointIndex < 8 ? 1.6 : pointIndex > 30 ? 0.72 : 1;
-      const drift = direction * magnitude * openPulse * (0.08 + random() * 0.27);
-      const reversal = Math.sin(pointIndex / 5 + index * 0.7) * magnitude * 0.08;
-      main += drift + reversal + (random() - 0.5) * magnitude * 0.16;
+    const points = times.map((time, pointIndex) => {
+      const normalizedIndex = pointIndex * stepScale;
+      const openPulse = normalizedIndex < 8 ? 1.6 : normalizedIndex > 30 ? 0.72 : 1;
+      const drift = direction * magnitude * openPulse * (0.08 + random() * 0.27) * stepScale;
+      const reversal = Math.sin(normalizedIndex / 5 + index * 0.7) * magnitude * 0.08 * stepScale;
+      main += drift + reversal + (random() - 0.5) * magnitude * 0.16 * stepScale;
       const superFlow = main * (0.44 + random() * 0.08);
       const largeFlow = main - superFlow;
       const mediumFlow = -main * (0.24 + random() * 0.12);
@@ -160,7 +168,7 @@ function distributeLabels(items, minY, maxY, gap) {
   return sorted;
 }
 
-function FlowChart({ series, flowType, period, activeName, onActiveName }) {
+function FlowChart({ series, flowType, interval, period, activeName, onActiveName }) {
   const width = 1180;
   const height = 600;
   const margin = { top: 26, right: 326, bottom: 54, left: 66 };
@@ -189,7 +197,7 @@ function FlowChart({ series, flowType, period, activeName, onActiveName }) {
   return (
     <div className="chart-scroll" aria-label="板块资金流向曲线，可横向滚动">
       <svg className="flow-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="chart-title chart-desc">
-        <title id="chart-title">板块{FLOW_TYPES[flowType].label}净流入累计曲线</title>
+        <title id="chart-title">板块{FLOW_TYPES[flowType].label}{INTERVAL_LABELS[interval]}净流入累计曲线</title>
         <desc id="chart-desc">红色表示净流入，绿色表示净流出，单位亿元。</desc>
         <rect x="0" y="0" width={width} height={height} fill="#fff" />
         {tickValues.map((tick) => (
@@ -282,14 +290,14 @@ function DataMethodDialog({ open, onClose }) {
       <section className="method-dialog" role="dialog" aria-modal="true" aria-labelledby="method-title">
         <button ref={closeRef} className="dialog-close" type="button" onClick={onClose}>关闭</button>
         <p className="eyebrow">DATA METHOD</p>
-        <h2 id="method-title">5 分钟板块资金流怎么得到</h2>
+        <h2 id="method-title">分钟与 5 分钟板块资金流怎么得到</h2>
         <ol>
           <li>板块目录：行业用 <code>m:90+t:2</code>，概念用 <code>m:90+t:3</code>，读取板块代码和名称。</li>
           <li>分钟资金：对 <code>90.BKxxxx</code> 请求 <code>stock/fflow/kline/get</code>，参数 <code>klt=1</code>。</li>
           <li>5 分钟采样：数据是日内累计值，每个 5 分钟桶取最后一条；不要把 1 分钟累计值相加。</li>
           <li>字段：<code>f51</code> 时间，<code>f52</code> 主力，<code>f53</code> 小单，<code>f54</code> 中单，<code>f55</code> 大单，<code>f56</code> 超大单；金额单位元。</li>
           <li>本地服务：后台每分钟采集，原始分钟数据写入 DuckDB；采集器会限制并发、重试备用域名并记录每次运行结果。</li>
-          <li>前端只读取本地 <code>/api/flows</code>，每 60 秒自动刷新；测试样本不会写入真实数据库。</li>
+          <li>前端通过 <code>interval=1m/5m</code> 切换分钟明细与 5 分钟视图，每 60 秒自动刷新；测试样本不会写入真实数据库。</li>
         </ol>
         <div className="formula-block">
           <code>flow_5m[sector, bucket] = last(flow_1m.cumulative_value)</code>
@@ -303,6 +311,7 @@ function DataMethodDialog({ open, onClose }) {
 export function App() {
   const [boardType, setBoardType] = useState("industry");
   const [flowType, setFlowType] = useState("main");
+  const [interval, setInterval] = useState("5m");
   const [period, setPeriod] = useState("full-day");
   const [topN, setTopN] = useState(18);
   const [mode, setMode] = useState("demo");
@@ -311,12 +320,23 @@ export function App() {
   const [updatedAt, setUpdatedAt] = useState("--:--");
   const [activeName, setActiveName] = useState("");
   const [methodOpen, setMethodOpen] = useState(false);
-  const demoSeries = useMemo(() => makeDemoSeries(boardType), [boardType]);
+  const demoSeries = useMemo(() => makeDemoSeries(boardType, interval), [boardType, interval]);
 
   const loadFromDatabase = useCallback(async ({ silent = false } = {}) => {
-    if (!silent) setStatus({ state: "loading", message: "正在读取本地 5 分钟聚合数据…" });
+    if (!silent) {
+      setStatus({
+        state: "loading",
+        message: interval === "1m" ? "正在读取本地分钟明细…" : "正在读取本地 5 分钟聚合数据…",
+      });
+    }
     try {
-      const query = new URLSearchParams({ boardType, flowType, limit: String(topN), tradeDate: "latest" });
+      const query = new URLSearchParams({
+        boardType,
+        flowType,
+        interval,
+        limit: String(topN),
+        tradeDate: "latest",
+      });
       const response = await fetch(`/api/flows?${query}`);
       if (!response.ok) throw new Error(`本地 API ${response.status}`);
       const payload = await response.json();
@@ -324,7 +344,10 @@ export function App() {
         setLiveSeries(payload.series);
         setMode("live");
         setUpdatedAt(`${payload.meta.tradeDate} ${payload.meta.latestMinute}`);
-        setStatus({ state: "live", message: "DuckDB 已连接 · SQL 5分钟聚合 · 每60秒自动刷新" });
+        setStatus({
+          state: "live",
+          message: `DuckDB 已连接 · ${interval === "1m" ? "分钟明细" : "SQL 5分钟聚合"} · 每60秒自动刷新`,
+        });
       } else {
         setLiveSeries([]);
         setMode("demo");
@@ -336,7 +359,7 @@ export function App() {
       setLiveSeries([]);
       setStatus({ state: "fallback", message: `${error.message || "本地服务不可用"} · 当前显示演示曲线` });
     }
-  }, [boardType, flowType, topN]);
+  }, [boardType, flowType, interval, topN]);
 
   const refreshLive = async () => {
     setStatus({ state: "loading", message: "后台正在立即采集并写入 DuckDB…" });
@@ -403,7 +426,7 @@ export function App() {
       <section className="page-heading">
         <div>
           <p className="date-line"><span>{date}</span> 板块资金流向</p>
-          <p className="subtitle">每分钟后台采集 · DuckDB 落库 · 5 分钟聚合 · 前端自动刷新</p>
+          <p className="subtitle">每分钟后台采集 · DuckDB 落库 · 1/5 分钟切换 · 前端自动刷新</p>
         </div>
         <div className={`source-status status-${status.state}`}>
           <span className="status-dot" />
@@ -434,6 +457,22 @@ export function App() {
             {Object.entries(PERIOD_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
           </select>
         </label>
+        <fieldset className="granularity-control">
+          <legend>曲线粒度</legend>
+          <div className="segmented-control">
+            {Object.entries(INTERVAL_LABELS).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                className={interval === value ? "is-active" : ""}
+                aria-pressed={interval === value}
+                onClick={() => setInterval(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </fieldset>
         <label>
           展示数量
           <select value={topN} onChange={(event) => setTopN(Number(event.target.value))}>
@@ -463,6 +502,7 @@ export function App() {
         <FlowChart
           series={ranked}
           flowType={flowType}
+          interval={interval}
           period={period}
           activeName={activeName}
           onActiveName={setActiveName}
@@ -492,7 +532,7 @@ export function App() {
       </section>
 
       <footer>
-        <p>本地链路：东方财富公开行情 → Node 采集器 → DuckDB 分钟明细 → SQL 5分钟视图 → 前端60秒轮询。</p>
+        <p>本地链路：东方财富公开行情 → Node 采集器 → DuckDB 分钟明细 → 分钟/SQL 5分钟视图 → 前端60秒轮询。</p>
         <p>本页面不构成投资建议。资金流为数据商统计口径，不是交易所官方资金进出。</p>
       </footer>
 

@@ -193,9 +193,18 @@ export class MoneyflowDatabase {
     `, run));
   }
 
-  async getFlowSeries({ boardType, flowType = "main", limit = 18, tradeDate = "latest" }) {
+  async getFlowSeries({
+    boardType,
+    flowType = "main",
+    limit = 18,
+    tradeDate = "latest",
+    interval = "5m",
+  }) {
     const field = FLOW_FIELDS[flowType] || FLOW_FIELDS.main;
     const safeLimit = Math.min(60, Math.max(1, Number(limit) || 18));
+    const safeInterval = interval === "1m" ? "1m" : "5m";
+    const sourceTable = safeInterval === "1m" ? "minute_flow" : "flow_5m";
+    const timeColumn = safeInterval === "1m" ? "minute" : "bucket";
     return this.enqueue(async () => {
       let selectedDate = tradeDate;
       if (!selectedDate || selectedDate === "latest") {
@@ -205,7 +214,17 @@ export class MoneyflowDatabase {
         );
         selectedDate = dateReader.getRowObjectsJson()[0]?.tradeDate || null;
       }
-      if (!selectedDate) return { meta: { tradeDate: null, latestMinute: null, collectedAt: null }, series: [] };
+      if (!selectedDate) {
+        return {
+          meta: {
+            tradeDate: null,
+            latestMinute: null,
+            collectedAt: null,
+            interval: safeInterval,
+          },
+          series: [],
+        };
+      }
 
       const reader = await this.connection.runAndReadAll(`
         WITH latest AS (
@@ -222,23 +241,28 @@ export class MoneyflowDatabase {
         )
         SELECT
           ranked.rank,
-          flow_5m.code,
-          flow_5m.name,
-          flow_5m.bucket AS time,
-          flow_5m.main_flow_yuan / 100000000.0 AS main,
-          flow_5m.small_flow_yuan / 100000000.0 AS small,
-          flow_5m.medium_flow_yuan / 100000000.0 AS medium,
-          flow_5m.large_flow_yuan / 100000000.0 AS large,
-          flow_5m.super_flow_yuan / 100000000.0 AS super,
-          flow_5m.collected_at
-        FROM flow_5m
+          flow.code,
+          flow.name,
+          flow.${timeColumn} AS time,
+          flow.main_flow_yuan / 100000000.0 AS main,
+          flow.small_flow_yuan / 100000000.0 AS small,
+          flow.medium_flow_yuan / 100000000.0 AS medium,
+          flow.large_flow_yuan / 100000000.0 AS large,
+          flow.super_flow_yuan / 100000000.0 AS super,
+          flow.collected_at
+        FROM ${sourceTable} AS flow
         JOIN ranked USING (code)
-        WHERE flow_5m.trade_date = $tradeDate
-          AND flow_5m.board_type = $boardType
+        WHERE flow.trade_date = $tradeDate
+          AND flow.board_type = $boardType
           AND ranked.rank <= $limit
-        ORDER BY ranked.rank, flow_5m.bucket
+        ORDER BY ranked.rank, flow.${timeColumn}
       `, { tradeDate: selectedDate, boardType, limit: safeLimit });
       const rows = reader.getRowObjectsJson();
+      const minuteReader = await this.connection.runAndReadAll(`
+        SELECT max(minute) AS latestMinute
+        FROM minute_flow
+        WHERE trade_date = $tradeDate AND board_type = $boardType
+      `, { tradeDate: selectedDate, boardType });
       const grouped = new Map();
       for (const row of rows) {
         if (!grouped.has(row.code)) grouped.set(row.code, { code: row.code, name: row.name, points: [] });
@@ -251,10 +275,15 @@ export class MoneyflowDatabase {
           super: row.super,
         });
       }
-      const latestMinute = rows.reduce((latest, row) => row.time > latest ? row.time : latest, "");
+      const latestMinute = minuteReader.getRowObjectsJson()[0]?.latestMinute || null;
       const collectedAt = rows.reduce((latest, row) => row.collected_at > latest ? row.collected_at : latest, "");
       return {
-        meta: { tradeDate: selectedDate, latestMinute: latestMinute || null, collectedAt: collectedAt || null },
+        meta: {
+          tradeDate: selectedDate,
+          latestMinute,
+          collectedAt: collectedAt || null,
+          interval: safeInterval,
+        },
         series: [...grouped.values()],
       };
     });

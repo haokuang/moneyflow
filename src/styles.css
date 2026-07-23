@@ -199,7 +199,7 @@ select:focus-visible {
   padding: 14px 0;
   display: flex;
   align-items: flex-end;
-  gap: 26px;
+  gap: 18px;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
 }
@@ -222,11 +222,55 @@ select:focus-visible {
   padding: 0 28px 0 10px;
 }
 
+.granularity-control {
+  min-width: 148px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.granularity-control legend {
+  margin-bottom: 6px;
+  padding: 0;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+.segmented-control {
+  height: 36px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid #d8dce2;
+  background: #f4f5f7;
+}
+
+.segmented-control button {
+  min-width: 0;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.segmented-control button + button {
+  border-left: 1px solid #d8dce2;
+}
+
+.segmented-control button.is-active {
+  background: var(--ink);
+  color: #fff;
+  font-weight: 700;
+}
+
 .updated-at {
   margin-left: auto;
   padding-bottom: 8px;
   color: var(--muted);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 .updated-at strong {
@@ -595,6 +639,10 @@ code {
 
   .control-strip select {
     width: 100%;
+    min-width: 0;
+  }
+
+  .granularity-control {
     min-width: 0;
   }
 
