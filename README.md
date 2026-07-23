@@ -38,7 +38,7 @@ docker compose up -d --build
 
 ```bash
 gh auth login
-gh repo clone haokuang/moneyflow -- --branch agent/docker-duckdb-deployment
+gh repo clone haokuang/moneyflow
 cd moneyflow
 docker compose up -d --build
 ```
