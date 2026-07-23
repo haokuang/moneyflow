@@ -199,7 +199,7 @@ select:focus-visible {
   padding: 14px 0;
   display: flex;
   align-items: flex-end;
-  gap: 26px;
+  gap: 14px;
   border-top: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
 }
@@ -213,7 +213,7 @@ select:focus-visible {
 }
 
 .control-strip select {
-  min-width: 132px;
+  min-width: 124px;
   height: 36px;
   border: 1px solid #d8dce2;
   border-radius: 0;
@@ -222,16 +222,51 @@ select:focus-visible {
   padding: 0 28px 0 10px;
 }
 
-.updated-at {
-  margin-left: auto;
-  padding-bottom: 8px;
+.date-control select {
+  min-width: 154px;
+}
+
+.granularity-control {
+  min-width: 148px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.granularity-control legend {
+  margin-bottom: 6px;
+  padding: 0;
   color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+}
+
+.segmented-control {
+  height: 36px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid #d8dce2;
+  background: #f4f5f7;
+}
+
+.segmented-control button {
+  min-width: 0;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
   font-size: 12px;
 }
 
-.updated-at strong {
-  color: var(--ink);
-  margin-left: 6px;
+.segmented-control button + button {
+  border-left: 1px solid #d8dce2;
+}
+
+.segmented-control button.is-active {
+  background: var(--ink);
+  color: #fff;
+  font-weight: 700;
 }
 
 .metric-strip {
@@ -598,8 +633,8 @@ code {
     min-width: 0;
   }
 
-  .updated-at {
-    margin-left: 0;
+  .granularity-control {
+    min-width: 0;
   }
 
   .metric-strip {
@@ -656,10 +691,6 @@ code {
 
   .control-strip {
     grid-template-columns: 1fr 1fr;
-  }
-
-  .updated-at {
-    grid-column: 1 / -1;
   }
 
   .metric-strip > div {

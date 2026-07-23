@@ -1,0 +1,12 @@
+.git
+.gitignore
+.openai
+node_modules
+dist
+data
+*.duckdb
+*.duckdb.*
+*.log
+.DS_Store
+design-qa.md
+tests
