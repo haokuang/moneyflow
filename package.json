@@ -11,6 +11,7 @@
     "collect": "node scripts/collect-once.mjs",
     "db:status": "node scripts/db-status.mjs",
     "check:api": "node scripts/check-api.mjs",
+    "collect:stocks": "node scripts/collect-stocks-once.mjs",
     "docker:build": "docker build -t moneyflow:local .",
     "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down",

@@ -75,7 +75,9 @@ export function parseMinuteKlines(payload, board) {
     return [{
       tradeDate: match[1],
       minute: match[2],
-      boardType: board.boardType,
+      ...(board.market !== undefined && board.market !== null
+        ? { market: String(board.market) }
+        : { boardType: board.boardType }),
       code: board.code,
       name: board.name,
       mainFlowYuan: main,
@@ -147,6 +149,65 @@ export async function fetchBoardMinuteFlow(board) {
     }
   }
   throw new Error(`${board.name}没有分钟资金数据 (${errors.join("; ")})`);
+}
+
+export async function fetchSectorConstituents(board, limit = 5) {
+  const { payload, endpoint } = await fetchWithFallback(LIST_ENDPOINTS, {
+    pn: 1,
+    pz: limit,
+    po: 1,
+    np: 1,
+    fltt: 2,
+    invt: 2,
+    fid: "f62",
+    fs: `b:${board.code}`,
+    fields: "f12,f13,f14,f2,f3,f62,f184",
+    ut: "bd1d9ddb04089700cf9c27f6f7426281",
+  });
+  const rows = rowsFromDiff(payload?.data?.diff);
+  if (!rows.length) throw new Error(`${board.name}没有成分股数据`);
+  return {
+    sourceHost: new URL(endpoint).host,
+    items: rows
+      .filter((row) => row.f12 && row.f14 && row.f13 !== undefined && row.f13 !== null)
+      .slice(0, limit)
+      .map((row, index) => ({
+        boardType: board.boardType,
+        boardCode: board.code,
+        boardName: board.name,
+        market: String(row.f13),
+        code: row.f12,
+        name: row.f14,
+        rank: index + 1,
+        snapshotPrice: finiteNumber(row.f2) || 0,
+        snapshotChangePct: finiteNumber(row.f3) || 0,
+        snapshotMainFlowYuan: finiteNumber(row.f62) || 0,
+        snapshotMainFlowRatio: finiteNumber(row.f184) || 0,
+      })),
+  };
+}
+
+export async function fetchStockMinuteFlow(stock) {
+  const params = {
+    secid: `${stock.market}.${stock.code}`,
+    lmt: 0,
+    klt: 1,
+    fields1: "f1,f2,f3,f7",
+    fields2: "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65",
+    ut: "b2884a393a59ad64002292a3e90d46a5",
+  };
+  const errors = [];
+  for (const endpoint of FLOW_ENDPOINTS) {
+    try {
+      const payload = await fetchJson(endpoint, params);
+      const rows = parseMinuteKlines(payload, stock);
+      if (rows.length) return { rows, sourceHost: new URL(endpoint).host };
+      errors.push(`${new URL(endpoint).host}: empty klines`);
+    } catch (error) {
+      errors.push(`${new URL(endpoint).host}: ${error.message}`);
+    }
+  }
+  throw new Error(`${stock.name}没有分钟资金数据 (${errors.join("; ")})`);
 }
 
 export async function mapWithConcurrency(items, concurrency, worker) {

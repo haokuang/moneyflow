@@ -15,6 +15,14 @@ test("parses Eastmoney one-minute cumulative fields without changing units", () 
   assert.equal(rows.length, 1);
   assert.equal(rows[0].mainFlowYuan, 100000000);
   assert.equal(rows[0].superFlowYuan, 60000000);
+
+  const stockRows = parseMinuteKlines(
+    { data: { klines: ["2026-07-22 09:31,80000000,-10000000,20000000,30000000,50000000"] } },
+    { market: "1", code: "600001", name: "样本股票" },
+  );
+  assert.equal(stockRows[0].market, "1");
+  assert.equal(stockRows[0].code, "600001");
+  assert.equal(stockRows[0].mainFlowYuan, 80000000);
 });
 
 test("persists one-minute rows and aggregates each five-minute bucket with last, not sum", async () => {
@@ -83,9 +91,99 @@ test("persists one-minute rows and aggregates each five-minute bucket with last,
     assert.equal(tradeDates.dates[0].rowCount, 6);
     assert.equal(tradeDates.dates[0].sectorCount, 2);
 
+    await database.upsertConstituentSnapshots([
+      {
+        tradeDate: "2026-07-22",
+        snapshotMinute: "15:00",
+        boardType: "industry",
+        boardCode: "BK1",
+        boardName: "板块一",
+        market: "1",
+        code: "600001",
+        name: "股票一",
+        rank: 1,
+        snapshotPrice: 12.3,
+        snapshotChangePct: 2.1,
+        snapshotMainFlowYuan: 500000000,
+        snapshotMainFlowRatio: 8.2,
+        sourceHost: "fixture",
+      },
+      {
+        tradeDate: "2026-07-22",
+        snapshotMinute: "15:00",
+        boardType: "industry",
+        boardCode: "BK1",
+        boardName: "板块一",
+        market: "0",
+        code: "000002",
+        name: "股票二",
+        rank: 2,
+        snapshotPrice: 8.6,
+        snapshotChangePct: 1.2,
+        snapshotMainFlowYuan: 300000000,
+        snapshotMainFlowRatio: 5.5,
+        sourceHost: "fixture",
+      },
+      {
+        tradeDate: "2026-07-22",
+        snapshotMinute: "15:00",
+        boardType: "industry",
+        boardCode: "BK2",
+        boardName: "板块二",
+        market: "1",
+        code: "600001",
+        name: "股票一",
+        rank: 1,
+        snapshotPrice: 12.3,
+        snapshotChangePct: 2.1,
+        snapshotMainFlowYuan: 500000000,
+        snapshotMainFlowRatio: 8.2,
+        sourceHost: "fixture",
+      },
+    ]);
+    const stockMk = (market, code, name, minute, main) => ({
+      tradeDate: "2026-07-22",
+      market,
+      code,
+      name,
+      minute,
+      mainFlowYuan: main,
+      smallFlowYuan: -main * 0.2,
+      mediumFlowYuan: -main * 0.3,
+      largeFlowYuan: main * 0.4,
+      superFlowYuan: main * 0.6,
+      sourceHost: "fixture",
+    });
+    await database.upsertStockMinuteRows([
+      stockMk("1", "600001", "股票一", "09:30", 100000000),
+      stockMk("1", "600001", "股票一", "15:00", 500000000),
+      stockMk("0", "000002", "股票二", "15:00", 300000000),
+    ]);
+    const cachedConstituents = await database.getCachedConstituents("industry", "BK1", 5);
+    assert.deepEqual(cachedConstituents.map((item) => item.code), ["600001", "000002"]);
+
+    const leaders = await database.getSectorStockLeaders({
+      boardType: "industry",
+      boardCode: "BK1",
+      tradeDate: "2026-07-22",
+      flowType: "main",
+      limit: 5,
+    });
+    assert.equal(leaders.meta.snapshotMinute, "15:00");
+    assert.equal(leaders.meta.latestMinute, "15:00");
+    assert.deepEqual(leaders.stocks.map((item) => [item.code, item.selectedFlow]), [
+      ["600001", 5],
+      ["000002", 3],
+    ]);
+
     const status = await database.getStatus();
     assert.equal(status.sectorCount, 2);
     assert.equal(status.minuteRowCount, 8);
+    assert.equal(status.constituentSnapshotCount, 3);
+    assert.equal(status.stockMinuteRowCount, 3);
+    assert.equal(status.stockCount, 2);
+    assert.equal(status.latestStockTradeDate, "2026-07-22");
+    assert.equal(status.latestStockMinute, "15:00");
   } finally {
     await database.close();
     await fs.rm(tempDir, { recursive: true, force: true });

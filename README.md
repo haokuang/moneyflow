@@ -1,6 +1,6 @@
 # A 股板块资金流 Dashboard
 
-一个参考“板块资金流向”截图实现的本地全栈 Dashboard。Node.js 采集器在交易时段每分钟读取东方财富公开行情，原始 1 分钟累计资金流写入 DuckDB，SQL 视图聚合成 5 分钟曲线，React 前端每 60 秒读取本地 API。
+一个参考“板块资金流向”截图实现的本地全栈 Dashboard。Node.js 采集器在交易时段每分钟读取东方财富公开行情，原始 1 分钟累计资金流写入 DuckDB，SQL 视图聚合成 5 分钟曲线，React 前端每 60 秒读取本地 API。独立的个股历史采集器每 5 分钟抓取所跟踪行业的主力净流入前 5 成分股，并回补这些个股当日完整的 1 分钟资金流。
 
 ## 本地运行
 
@@ -18,6 +18,7 @@ npm run build
 npm test
 npm run db:status
 npm run collect
+npm run collect:stocks
 ```
 
 数据库默认位于 `data/moneyflow.duckdb`，不会提交到 Git。
@@ -52,6 +53,7 @@ docker compose ps
 docker compose logs -f moneyflow
 docker compose exec moneyflow npm run db:status
 docker compose exec moneyflow npm run collect
+docker compose exec moneyflow npm run collect:stocks
 docker compose down
 ```
 
@@ -81,6 +83,13 @@ docker run -d --name moneyflow -p 4173:4173 -v moneyflow_data:/app/data moneyflo
   → DuckDB flow_5m SQL 视图（每桶 arg_max(value, minute)）
   → GET /api/flows
   → React 前端每60秒刷新
+
+东财行业板块
+  → 每5分钟获取按主力净流入排序的前5成分股
+  → DuckDB sector_constituent_snapshot 成分股快照
+  → 去重后回补个股完整当日1分钟资金流
+  → DuckDB stock_minute_flow / stock_flow_5m
+  → GET /api/sector-stocks
 ```
 
 本地 API：
@@ -90,7 +99,9 @@ docker run -d --name moneyflow -p 4173:4173 -v moneyflow_data:/app/data moneyflo
 - `GET /api/trade-dates?boardType=industry`：已入库交易日列表，供前端日期选择
 - `GET /api/flows?boardType=industry&flowType=main&interval=1m&limit=18`：1分钟曲线
 - `GET /api/flows?boardType=industry&flowType=main&interval=5m&limit=18`：5分钟曲线（默认）
+- `GET /api/sector-stocks?boardType=industry&boardCode=BK1036&tradeDate=latest&limit=5`：板块个股资金前5
 - `POST /api/collect`：手动触发一次采集
+- `POST /api/collect-stocks`：手动触发一次成分股与个股历史采集
 
 ## 数据路径
 
@@ -138,6 +149,16 @@ flow_5m[sector, bucket] = last(flow_1m.cumulative_value)
 increment_5m[t] = cumulative_5m[t] - cumulative_5m[t-1]
 ```
 
+### 4. 个股级历史
+
+个股采集器先用 `fs=b:BKxxxx` 查询板块成分股，按 `f62` 主力净流入降序保留前 N 个。每次快照写入：
+
+- `sector_constituent_snapshot`：交易日、快照分钟、板块、股票、当时排名、价格、涨跌幅、主力净流入及占比。
+- `stock_minute_flow`：按 `trade_date + market + code + minute` 去重的个股 1 分钟五档累计资金流。
+- `stock_flow_5m`：与板块相同口径的个股 5 分钟视图。
+
+同一股票可能属于多个板块，分钟资金流只保存一份；板块归属通过快照表关联。个股接口每次返回完整当日分钟序列，因此默认每 5 分钟回补一次即可得到 1 分钟历史，不需要对每只股票每分钟重复发起请求。
+
 ## 运行参数
 
 可通过环境变量调整：
@@ -149,8 +170,14 @@ increment_5m[t] = cumulative_5m[t] - cumulative_5m[t-1]
 - `BOARD_TYPES=industry,concept`：采集板块体系
 - `FETCH_CONCURRENCY=6`：行情请求并发数
 - `REQUEST_TIMEOUT_MS=10000`：单次请求超时
+- `STOCK_HISTORY_ENABLED=1`：启用个股历史采集
+- `STOCK_COLLECT_INTERVAL_MS=300000`：个股历史回补间隔，默认5分钟
+- `STOCK_BOARD_TYPES=industry`：默认只采集东财行业，避免概念板块成分重叠造成请求膨胀
+- `STOCK_BOARDS_PER_TYPE=30`：每个板块体系跟踪的板块数量
+- `STOCKS_PER_BOARD=5`：每个板块按主力净流入保留的成分股数量
+- `STOCK_FETCH_CONCURRENCY=4`：个股分钟接口并发数
 - `FORCE_COLLECT=1`：测试时忽略交易时段限制
 
-板块目录和分钟接口均有备用域名重试。若公开接口不可达，真实表不会写入伪数据，前端会明确显示演示状态。长期稳定运行仍应增加官方交易日历、缺口告警，并评估有 SLA 的授权数据源。
+板块目录、成分股和分钟接口均有备用域名重试。若公开接口不可达，真实表不会写入伪数据；已有成分股快照可以用于继续尝试个股分钟回补。长期稳定运行仍应增加官方交易日历、缺口告警，并评估有 SLA 的授权数据源。
 
 “资金流”通常是数据商根据主动买卖方向和成交单档位估算出的统计指标，不是交易所发布的真实资金进出；不同数据源的板块体系和口径不能直接混用。

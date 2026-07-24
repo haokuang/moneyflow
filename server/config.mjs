@@ -16,6 +16,31 @@ export const boardTypes = (process.env.BOARD_TYPES || "industry,concept")
   .split(",")
   .map((value) => value.trim())
   .filter((value) => value === "industry" || value === "concept");
+export const stockHistoryEnabled = process.env.STOCK_HISTORY_ENABLED !== "0";
+export const stockCollectIntervalMs = Math.max(
+  60_000,
+  Number(process.env.STOCK_COLLECT_INTERVAL_MS || 300_000),
+);
+export const stockStartupDelayMs = Math.max(
+  0,
+  Number(process.env.STOCK_STARTUP_DELAY_MS || 15_000),
+);
+export const stockBoardsPerType = Math.min(
+  60,
+  Math.max(1, Number(process.env.STOCK_BOARDS_PER_TYPE || boardsPerSide * 2)),
+);
+export const stocksPerBoard = Math.min(
+  20,
+  Math.max(1, Number(process.env.STOCKS_PER_BOARD || 5)),
+);
+export const stockFetchConcurrency = Math.min(
+  12,
+  Math.max(1, Number(process.env.STOCK_FETCH_CONCURRENCY || 4)),
+);
+export const stockBoardTypes = (process.env.STOCK_BOARD_TYPES || "industry")
+  .split(",")
+  .map((value) => value.trim())
+  .filter((value) => value === "industry" || value === "concept");
 
 export function shanghaiClock(date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {

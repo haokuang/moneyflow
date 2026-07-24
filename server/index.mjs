@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { MoneyflowCollector } from "./collector.mjs";
 import { databasePath, host, port, projectRoot } from "./config.mjs";
 import { MoneyflowDatabase } from "./db.mjs";
+import { StockHistoryCollector } from "./stock-collector.mjs";
 
 function sendJson(response, status, payload) {
   response.writeHead(status, {
@@ -25,6 +26,8 @@ function contentType(filePath) {
 const database = await MoneyflowDatabase.create(databasePath);
 const collector = new MoneyflowCollector(database);
 collector.start();
+const stockCollector = new StockHistoryCollector(database);
+stockCollector.start();
 
 const development = process.env.NODE_ENV !== "production";
 const vite = development
@@ -39,10 +42,19 @@ const server = http.createServer(async (request, response) => {
   const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
   try {
     if (url.pathname === "/api/health") {
-      return sendJson(response, 200, { ok: true, database: database.filePath, collector: collector.getStatus() });
+      return sendJson(response, 200, {
+        ok: true,
+        database: database.filePath,
+        collector: collector.getStatus(),
+        stockCollector: stockCollector.getStatus(),
+      });
     }
     if (url.pathname === "/api/status") {
-      return sendJson(response, 200, { database: await database.getStatus(), collector: collector.getStatus() });
+      return sendJson(response, 200, {
+        database: await database.getStatus(),
+        collector: collector.getStatus(),
+        stockCollector: stockCollector.getStatus(),
+      });
     }
     if (url.pathname === "/api/trade-dates" && request.method === "GET") {
       const boardType = url.searchParams.get("boardType") === "concept" ? "concept" : "industry";
@@ -62,8 +74,28 @@ const server = http.createServer(async (request, response) => {
         interval,
       }));
     }
+    if (url.pathname === "/api/sector-stocks" && request.method === "GET") {
+      const boardType = url.searchParams.get("boardType") === "concept" ? "concept" : "industry";
+      const boardCode = url.searchParams.get("boardCode") || "";
+      if (!/^BK\d+$/.test(boardCode)) {
+        return sendJson(response, 400, { error: "boardCode must look like BK1036" });
+      }
+      const tradeDate = url.searchParams.get("tradeDate") || "latest";
+      const flowType = url.searchParams.get("flowType") || "main";
+      const limit = Number(url.searchParams.get("limit") || 5);
+      return sendJson(response, 200, await database.getSectorStockLeaders({
+        boardType,
+        boardCode,
+        tradeDate,
+        flowType,
+        limit,
+      }));
+    }
     if (url.pathname === "/api/collect" && request.method === "POST") {
       return sendJson(response, 200, await collector.collect("manual"));
+    }
+    if (url.pathname === "/api/collect-stocks" && request.method === "POST") {
+      return sendJson(response, 200, await stockCollector.collect("manual"));
     }
 
     if (vite) return vite.middlewares(request, response, () => sendJson(response, 404, { error: "Not found" }));
@@ -98,6 +130,7 @@ async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   collector.stop();
+  stockCollector.stop();
   await vite?.close();
   await new Promise((resolve) => server.close(resolve));
   await database.close();
