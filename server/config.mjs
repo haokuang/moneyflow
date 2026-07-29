@@ -41,6 +41,23 @@ export const stockBoardTypes = (process.env.STOCK_BOARD_TYPES || "industry")
   .split(",")
   .map((value) => value.trim())
   .filter((value) => value === "industry" || value === "concept");
+export const marketTurnoverEnabled = process.env.MARKET_TURNOVER_ENABLED !== "0";
+export const marketTurnoverCollectIntervalMs = Math.max(
+  60_000,
+  Number(process.env.MARKET_TURNOVER_COLLECT_INTERVAL_MS || 600_000),
+);
+export const marketTurnoverStartupDelayMs = Math.max(
+  0,
+  Number(process.env.MARKET_TURNOVER_STARTUP_DELAY_MS || 5_000),
+);
+export const marketTurnoverDays = Math.min(
+  120,
+  Math.max(5, Number(process.env.MARKET_TURNOVER_DAYS || 30)),
+);
+export const marketTurnoverFetchConcurrency = Math.min(
+  8,
+  Math.max(1, Number(process.env.MARKET_TURNOVER_FETCH_CONCURRENCY || 4)),
+);
 
 export function shanghaiClock(date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {

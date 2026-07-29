@@ -13,3 +13,4 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - The intraday chart supports `1 minute` and `5 minute` display granularity, with `5 minute` as the default.
 - The date selector lists only trading dates already stored in DuckDB, defaults to the latest available date for the selected board system, and keeps the chosen historical date during automatic refreshes.
 - Stock-level history is persisted separately: snapshot the top constituents by main-flow ranking and deduplicate each stock's one-minute flow across overlapping sectors. The default production cadence is a five-minute full-day backfill for the top five stocks in tracked Eastmoney industry boards.
+- The dashboard includes a rolling 30-trading-day A-share turnover curve. The metric is persisted in DuckDB and equals SSE Main Board A shares plus STAR Market turnover, plus SZSE Main Board A shares plus ChiNext turnover; exclude B shares, funds, and bonds.

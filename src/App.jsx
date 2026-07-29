@@ -145,6 +145,16 @@ function formatYi(value, signed = false) {
   return `${prefix}${value.toFixed(Math.abs(value) >= 10 ? 1 : 2)}亿`;
 }
 
+function formatTurnoverYi(value) {
+  if (!Number.isFinite(value)) return "--";
+  return value >= 10_000 ? `${(value / 10_000).toFixed(2)}万亿` : `${value.toFixed(0)}亿`;
+}
+
+function formatShortDate(value) {
+  const match = /^\d{4}-(\d{2})-(\d{2})$/.exec(value || "");
+  return match ? `${Number(match[1])}/${Number(match[2])}` : value;
+}
+
 function formatTradeDateLabel(tradeDate) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(tradeDate || "");
   if (match) return `${Number(match[2])}月${Number(match[3])}日`;
@@ -254,6 +264,111 @@ function FlowChart({ series, flowType, interval, period, activeName, onActiveNam
   );
 }
 
+function MarketTurnoverChart({ points }) {
+  const width = 1180;
+  const height = 350;
+  const margin = { top: 30, right: 30, bottom: 52, left: 72 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const maxValue = Math.max(1, ...points.map((point) => point.total));
+  const bound = Math.ceil((maxValue * 1.08) / 2000) * 2000;
+  const average = points.reduce((sum, point) => sum + point.total, 0) / Math.max(points.length, 1);
+  const x = (index) => margin.left + (index / Math.max(points.length - 1, 1)) * plotWidth;
+  const y = (value) => margin.top + ((bound - value) / bound) * plotHeight;
+  const line = points.map((point, index) => `${index ? "L" : "M"}${x(index).toFixed(1)},${y(point.total).toFixed(1)}`).join(" ");
+  const area = `${line} L${x(points.length - 1).toFixed(1)},${y(0).toFixed(1)} L${x(0).toFixed(1)},${y(0).toFixed(1)} Z`;
+  const yTicks = [0, bound / 3, (bound * 2) / 3, bound];
+  const tickStep = Math.max(1, Math.ceil((points.length - 1) / 6));
+  const xTicks = points.filter((_, index) => index === 0 || index === points.length - 1 || index % tickStep === 0);
+
+  return (
+    <div className="turnover-chart-scroll" aria-label="过去30个交易日A股成交额曲线，可横向滚动">
+      <svg className="turnover-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="turnover-chart-title turnover-chart-desc">
+        <title id="turnover-chart-title">过去30个交易日A股成交额曲线</title>
+        <desc id="turnover-chart-desc">上交所主板A股和科创板，加深交所主板A股和创业板，单位亿元。</desc>
+        <defs>
+          <linearGradient id="turnover-fill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#ef5c1a" stopOpacity="0.24" />
+            <stop offset="100%" stopColor="#ef5c1a" stopOpacity="0.02" />
+          </linearGradient>
+        </defs>
+        {yTicks.map((tick) => (
+          <g key={tick}>
+            <line x1={margin.left} x2={width - margin.right} y1={y(tick)} y2={y(tick)} className="grid-line" />
+            <text x={margin.left - 12} y={y(tick) + 4} textAnchor="end" className="axis-text">
+              {tick >= 10_000 ? `${(tick / 10_000).toFixed(1)}万` : tick.toFixed(0)}
+            </text>
+          </g>
+        ))}
+        {xTicks.map((point) => {
+          const index = points.indexOf(point);
+          return (
+            <text key={point.tradeDate} x={x(index)} y={height - 20} textAnchor="middle" className="axis-text">
+              {formatShortDate(point.tradeDate)}
+            </text>
+          );
+        })}
+        <line x1={margin.left} x2={width - margin.right} y1={y(average)} y2={y(average)} className="turnover-average-line" />
+        <text x={width - margin.right} y={y(average) - 8} textAnchor="end" className="turnover-average-label">
+          30日均值 {formatTurnoverYi(average)}
+        </text>
+        <path d={area} fill="url(#turnover-fill)" />
+        <path d={line} fill="none" stroke="#ef5c1a" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+        {points.map((point, index) => (
+          <circle key={point.tradeDate} cx={x(index)} cy={y(point.total)} r={index === points.length - 1 ? 5 : 3} className="turnover-point">
+            <title>{`${point.tradeDate} A股 ${formatTurnoverYi(point.total)}（沪 ${formatTurnoverYi(point.shanghai)} / 深 ${formatTurnoverYi(point.shenzhen)}）`}</title>
+          </circle>
+        ))}
+        <text x="18" y={margin.top + plotHeight / 2} transform={`rotate(-90 18 ${margin.top + plotHeight / 2})`} textAnchor="middle" className="axis-title">
+          成交额（亿元）
+        </text>
+      </svg>
+    </div>
+  );
+}
+
+function MarketTurnoverPanel({ payload, status }) {
+  const points = payload.points || [];
+  const latest = points[points.length - 1];
+  const previous = points[points.length - 2];
+  const average = points.reduce((sum, point) => sum + point.total, 0) / Math.max(points.length, 1);
+  const dayChange = latest && previous && previous.total
+    ? ((latest.total - previous.total) / previous.total) * 100
+    : null;
+
+  return (
+    <section className="turnover-section">
+      <div className="turnover-heading">
+        <div>
+          <p className="eyebrow">MARKET LIQUIDITY</p>
+          <h2>过去30个交易日 A 股成交额</h2>
+          <p className="panel-copy">上交所主板A股与科创板，加深交所主板A股与创业板；不含B股、基金和债券。</p>
+        </div>
+        <div className={`turnover-freshness status-${status.state}`}>
+          <span className="status-dot" />
+          <span>{status.message}</span>
+        </div>
+      </div>
+      {points.length ? (
+        <>
+          <div className="turnover-kpis" aria-label="A股成交额摘要">
+            <div><span>最新成交额</span><strong>{formatTurnoverYi(latest.total)}</strong><small>{latest.tradeDate}</small></div>
+            <div><span>30日均值</span><strong>{formatTurnoverYi(average)}</strong><small>{points.length} 个交易日</small></div>
+            <div>
+              <span>较前一日</span>
+              <strong className={dayChange >= 0 ? "positive" : "negative"}>{dayChange === null ? "--" : `${dayChange >= 0 ? "+" : ""}${dayChange.toFixed(1)}%`}</strong>
+              <small>{previous ? `${formatTurnoverYi(previous.total)} → ${formatTurnoverYi(latest.total)}` : "等待更多数据"}</small>
+            </div>
+          </div>
+          <MarketTurnoverChart points={points} />
+        </>
+      ) : (
+        <div className="turnover-empty">正在等待官方交易所数据首次回补，完成后将在这里显示真实曲线。</div>
+      )}
+    </section>
+  );
+}
+
 function FundBuckets({ series, period }) {
   const buckets = Object.entries(FLOW_TYPES).map(([key, config]) => {
     const value = series.reduce((sum, item) => {
@@ -304,6 +419,7 @@ function DataMethodDialog({ open, onClose }) {
           <li>字段：<code>f51</code> 时间，<code>f52</code> 主力，<code>f53</code> 小单，<code>f54</code> 中单，<code>f55</code> 大单，<code>f56</code> 超大单；金额单位元。</li>
           <li>本地服务：后台每分钟采集，原始分钟数据写入 DuckDB；采集器会限制并发、重试备用域名并记录每次运行结果。</li>
           <li>前端通过 <code>interval=1m/5m</code> 切换分钟明细与 5 分钟视图，每 60 秒自动刷新；测试样本不会写入真实数据库。</li>
+          <li>A股成交额：按交易日读取上交所主板A股与科创板、深交所主板A股与创业板的官方每日成交金额并求和，不包含B股、基金和债券。</li>
         </ol>
         <div className="formula-block">
           <code>flow_5m[sector, bucket] = last(flow_1m.cumulative_value)</code>
@@ -327,6 +443,8 @@ export function App() {
   const [status, setStatus] = useState({ state: "loading", message: "正在连接本地 DuckDB 服务…" });
   const [activeName, setActiveName] = useState("");
   const [methodOpen, setMethodOpen] = useState(false);
+  const [turnoverPayload, setTurnoverPayload] = useState({ meta: {}, points: [] });
+  const [turnoverStatus, setTurnoverStatus] = useState({ state: "loading", message: "正在读取官方成交额历史…" });
   const demoSeries = useMemo(() => makeDemoSeries(boardType, interval), [boardType, interval]);
   const selectedTradeDate = tradeDate === "latest"
     ? tradeDates[0]?.tradeDate || "latest"
@@ -399,6 +517,23 @@ export function App() {
     }
   };
 
+  const loadMarketTurnover = useCallback(async ({ silent = false } = {}) => {
+    if (!silent) setTurnoverStatus({ state: "loading", message: "正在读取官方成交额历史…" });
+    try {
+      const response = await fetch("/api/market-turnover?limit=30");
+      if (!response.ok) throw new Error(`成交额 API ${response.status}`);
+      const payload = await response.json();
+      setTurnoverPayload(payload);
+      if (payload.points?.length) {
+        setTurnoverStatus({ state: "live", message: `官方数据至 ${payload.meta.latestTradeDate} · 每60秒检查更新` });
+      } else {
+        setTurnoverStatus({ state: "loading", message: "首次30日回补进行中" });
+      }
+    } catch (error) {
+      setTurnoverStatus({ state: "fallback", message: error.message || "成交额数据暂不可用" });
+    }
+  }, []);
+
   useEffect(() => {
     void loadTradeDates();
     const timer = window.setInterval(() => void loadTradeDates(), 60_000);
@@ -410,6 +545,12 @@ export function App() {
     const timer = window.setInterval(() => void loadFromDatabase({ silent: true }), 60_000);
     return () => window.clearInterval(timer);
   }, [loadFromDatabase]);
+
+  useEffect(() => {
+    void loadMarketTurnover();
+    const timer = window.setInterval(() => void loadMarketTurnover({ silent: true }), 60_000);
+    return () => window.clearInterval(timer);
+  }, [loadMarketTurnover]);
 
   const sourceSeries = mode === "live" && liveSeries.length ? liveSeries : demoSeries;
   const ranked = useMemo(() => {
@@ -553,6 +694,8 @@ export function App() {
         />
       </section>
 
+      <MarketTurnoverPanel payload={turnoverPayload} status={turnoverStatus} />
+
       <section className="lower-grid">
         <div className="bucket-panel">
           <p className="eyebrow">ORDER SIZE MIX</p>
@@ -576,7 +719,7 @@ export function App() {
       </section>
 
       <footer>
-        <p>本地链路：东方财富公开行情 → Node 采集器 → DuckDB 分钟明细 → 分钟/SQL 5分钟视图 → 前端60秒轮询。</p>
+        <p>本地链路：东方财富公开行情与沪深交易所每日概况 → Node 采集器 → DuckDB → 分钟/5分钟及30日成交额 API → 前端60秒轮询。</p>
         <p>本页面不构成投资建议。资金流为数据商统计口径，不是交易所官方资金进出。</p>
       </footer>
 

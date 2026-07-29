@@ -5,6 +5,11 @@ import path from "node:path";
 import test from "node:test";
 import { MoneyflowDatabase } from "../server/db.mjs";
 import { parseMinuteKlines } from "../server/provider/eastmoney.mjs";
+import {
+  parseSseTurnover,
+  parseSzseTurnover,
+  parseTradingDates,
+} from "../server/provider/market-turnover.mjs";
 
 test("parses Eastmoney one-minute cumulative fields without changing units", () => {
   const rows = parseMinuteKlines({ data: { klines: ["2026-07-22 09:31,100000000,-20000000,30000000,40000000,60000000"] } }, {
@@ -23,6 +28,32 @@ test("parses Eastmoney one-minute cumulative fields without changing units", () 
   assert.equal(stockRows[0].market, "1");
   assert.equal(stockRows[0].code, "600001");
   assert.equal(stockRows[0].mainFlowYuan, 80000000);
+});
+
+test("parses official exchange A-share turnover without mixing B shares or funds", () => {
+  assert.deepEqual(parseTradingDates({
+    data: { sh000001: { day: [["2026-07-23"], ["2026-07-24"], ["2026-07-27"]] } },
+  }, 2), ["2026-07-24", "2026-07-27"]);
+
+  const shanghai = parseSseTurnover({
+    result: [
+      { PRODUCT_CODE: "01", TRADE_AMT: "6,267.15" },
+      { PRODUCT_CODE: "02", TRADE_AMT: "1.72" },
+      { PRODUCT_CODE: "03", TRADE_AMT: "2,894.15" },
+    ],
+  });
+  const shenzhen = parseSzseTurnover([{
+    metadata: { tabkey: "tab1" },
+    data: [
+      { lbmc: "股票", cjje: "10,168.80" },
+      { lbmc: "&nbsp;&nbsp;主板A股", cjje: "5,671.17" },
+      { lbmc: "&nbsp;&nbsp;主板B股", cjje: "0.46" },
+      { lbmc: "&nbsp;&nbsp;创业板A股", cjje: "4,497.16" },
+      { lbmc: "基金", cjje: "1,535.12" },
+    ],
+  }]);
+  assert.equal(shanghai, 9161.3 * 100_000_000);
+  assert.equal(shenzhen, 10168.33 * 100_000_000);
 });
 
 test("persists one-minute rows and aggregates each five-minute bucket with last, not sum", async () => {
@@ -176,6 +207,32 @@ test("persists one-minute rows and aggregates each five-minute bucket with last,
       ["000002", 3],
     ]);
 
+    await database.upsertMarketTurnoverRows([
+      {
+        tradeDate: "2026-07-21",
+        shanghaiTurnoverYuan: 7000 * 100_000_000,
+        shenzhenTurnoverYuan: 8000 * 100_000_000,
+        totalTurnoverYuan: 15000 * 100_000_000,
+        sourceNote: "fixture",
+      },
+      {
+        tradeDate: "2026-07-22",
+        shanghaiTurnoverYuan: 8000 * 100_000_000,
+        shenzhenTurnoverYuan: 9000 * 100_000_000,
+        totalTurnoverYuan: 17000 * 100_000_000,
+        sourceNote: "fixture",
+      },
+    ]);
+    const turnoverDates = await database.getMarketTurnoverDates(30);
+    assert.deepEqual(turnoverDates, ["2026-07-22", "2026-07-21"]);
+    const turnover = await database.getMarketTurnoverHistory(30);
+    assert.equal(turnover.meta.count, 2);
+    assert.equal(turnover.meta.latestTradeDate, "2026-07-22");
+    assert.deepEqual(turnover.points.map((item) => [item.tradeDate, item.total]), [
+      ["2026-07-21", 15000],
+      ["2026-07-22", 17000],
+    ]);
+
     const status = await database.getStatus();
     assert.equal(status.sectorCount, 2);
     assert.equal(status.minuteRowCount, 8);
@@ -184,6 +241,8 @@ test("persists one-minute rows and aggregates each five-minute bucket with last,
     assert.equal(status.stockCount, 2);
     assert.equal(status.latestStockTradeDate, "2026-07-22");
     assert.equal(status.latestStockMinute, "15:00");
+    assert.equal(status.marketTurnoverDayCount, 2);
+    assert.equal(status.latestMarketTurnoverDate, "2026-07-22");
   } finally {
     await database.close();
     await fs.rm(tempDir, { recursive: true, force: true });

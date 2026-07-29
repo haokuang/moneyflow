@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { MoneyflowCollector } from "./collector.mjs";
 import { databasePath, host, port, projectRoot } from "./config.mjs";
 import { MoneyflowDatabase } from "./db.mjs";
+import { MarketTurnoverCollector } from "./market-turnover-collector.mjs";
 import { StockHistoryCollector } from "./stock-collector.mjs";
 
 function sendJson(response, status, payload) {
@@ -28,6 +29,8 @@ const collector = new MoneyflowCollector(database);
 collector.start();
 const stockCollector = new StockHistoryCollector(database);
 stockCollector.start();
+const marketTurnoverCollector = new MarketTurnoverCollector(database);
+marketTurnoverCollector.start();
 
 const development = process.env.NODE_ENV !== "production";
 const vite = development
@@ -47,6 +50,7 @@ const server = http.createServer(async (request, response) => {
         database: database.filePath,
         collector: collector.getStatus(),
         stockCollector: stockCollector.getStatus(),
+        marketTurnoverCollector: marketTurnoverCollector.getStatus(),
       });
     }
     if (url.pathname === "/api/status") {
@@ -54,7 +58,12 @@ const server = http.createServer(async (request, response) => {
         database: await database.getStatus(),
         collector: collector.getStatus(),
         stockCollector: stockCollector.getStatus(),
+        marketTurnoverCollector: marketTurnoverCollector.getStatus(),
       });
+    }
+    if (url.pathname === "/api/market-turnover" && request.method === "GET") {
+      const limit = Number(url.searchParams.get("limit") || 30);
+      return sendJson(response, 200, await database.getMarketTurnoverHistory(limit));
     }
     if (url.pathname === "/api/trade-dates" && request.method === "GET") {
       const boardType = url.searchParams.get("boardType") === "concept" ? "concept" : "industry";
@@ -97,6 +106,9 @@ const server = http.createServer(async (request, response) => {
     if (url.pathname === "/api/collect-stocks" && request.method === "POST") {
       return sendJson(response, 200, await stockCollector.collect("manual"));
     }
+    if (url.pathname === "/api/collect-turnover" && request.method === "POST") {
+      return sendJson(response, 200, await marketTurnoverCollector.collect("manual"));
+    }
 
     if (vite) return vite.middlewares(request, response, () => sendJson(response, 404, { error: "Not found" }));
 
@@ -131,6 +143,7 @@ async function shutdown() {
   shuttingDown = true;
   collector.stop();
   stockCollector.stop();
+  marketTurnoverCollector.stop();
   await vite?.close();
   await new Promise((resolve) => server.close(resolve));
   await database.close();

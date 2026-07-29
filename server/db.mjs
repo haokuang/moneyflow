@@ -79,6 +79,15 @@ CREATE TABLE IF NOT EXISTS stock_minute_flow (
   PRIMARY KEY (trade_date, market, code, minute)
 );
 
+CREATE TABLE IF NOT EXISTS market_turnover_daily (
+  trade_date VARCHAR PRIMARY KEY,
+  shanghai_turnover_yuan DOUBLE NOT NULL,
+  shenzhen_turnover_yuan DOUBLE NOT NULL,
+  total_turnover_yuan DOUBLE NOT NULL,
+  collected_at VARCHAR NOT NULL,
+  source_note VARCHAR NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS collector_runs (
   run_id VARCHAR PRIMARY KEY,
   reason VARCHAR NOT NULL,
@@ -106,12 +115,26 @@ CREATE TABLE IF NOT EXISTS stock_collector_runs (
   error_message VARCHAR
 );
 
+CREATE TABLE IF NOT EXISTS market_turnover_runs (
+  run_id VARCHAR PRIMARY KEY,
+  reason VARCHAR NOT NULL,
+  started_at VARCHAR NOT NULL,
+  finished_at VARCHAR NOT NULL,
+  status VARCHAR NOT NULL,
+  dates_requested INTEGER NOT NULL,
+  dates_succeeded INTEGER NOT NULL,
+  rows_upserted INTEGER NOT NULL,
+  error_message VARCHAR
+);
+
 CREATE TEMP TABLE IF NOT EXISTS catalog_stage AS SELECT * FROM sector_catalog WHERE false;
 CREATE TEMP TABLE IF NOT EXISTS minute_flow_stage AS SELECT * FROM minute_flow WHERE false;
 CREATE TEMP TABLE IF NOT EXISTS constituent_snapshot_stage AS
   SELECT * FROM sector_constituent_snapshot WHERE false;
 CREATE TEMP TABLE IF NOT EXISTS stock_minute_flow_stage AS
   SELECT * FROM stock_minute_flow WHERE false;
+CREATE TEMP TABLE IF NOT EXISTS market_turnover_stage AS
+  SELECT * FROM market_turnover_daily WHERE false;
 
 CREATE OR REPLACE VIEW flow_5m AS
 WITH normalized AS (
@@ -359,6 +382,35 @@ export class MoneyflowDatabase {
     });
   }
 
+  async upsertMarketTurnoverRows(items) {
+    if (!items.length) return 0;
+    return this.enqueue(async () => {
+      await this.connection.run("DELETE FROM market_turnover_stage");
+      const appender = await this.connection.createAppender("market_turnover_stage");
+      const collectedAt = nowIso();
+      for (const item of items) {
+        appender.appendVarchar(item.tradeDate);
+        appender.appendDouble(item.shanghaiTurnoverYuan);
+        appender.appendDouble(item.shenzhenTurnoverYuan);
+        appender.appendDouble(item.totalTurnoverYuan);
+        appender.appendVarchar(collectedAt);
+        appender.appendVarchar(item.sourceNote || "SSE/SZSE official daily overview");
+        appender.endRow();
+      }
+      appender.closeSync();
+      await this.connection.run(`
+        INSERT INTO market_turnover_daily SELECT * FROM market_turnover_stage
+        ON CONFLICT (trade_date) DO UPDATE SET
+          shanghai_turnover_yuan = excluded.shanghai_turnover_yuan,
+          shenzhen_turnover_yuan = excluded.shenzhen_turnover_yuan,
+          total_turnover_yuan = excluded.total_turnover_yuan,
+          collected_at = excluded.collected_at,
+          source_note = excluded.source_note
+      `);
+      return items.length;
+    });
+  }
+
   async getLatestTradeDate(boardType) {
     return this.enqueue(async () => {
       const reader = await this.connection.runAndReadAll(
@@ -418,6 +470,61 @@ export class MoneyflowDatabase {
         $constituentsUpserted, $stockRowsUpserted, $errorMessage
       )
     `, run));
+  }
+
+  async recordMarketTurnoverRun(run) {
+    return this.enqueue(() => this.connection.run(`
+      INSERT OR REPLACE INTO market_turnover_runs VALUES (
+        $runId, $reason, $startedAt, $finishedAt, $status,
+        $datesRequested, $datesSucceeded, $rowsUpserted, $errorMessage
+      )
+    `, run));
+  }
+
+  async getMarketTurnoverDates(limit = 60) {
+    const safeLimit = Math.min(365, Math.max(1, Number(limit) || 60));
+    return this.enqueue(async () => {
+      const reader = await this.connection.runAndReadAll(`
+        SELECT trade_date AS tradeDate
+        FROM market_turnover_daily
+        ORDER BY trade_date DESC
+        LIMIT $limit
+      `, { limit: safeLimit });
+      return reader.getRowObjectsJson().map((row) => row.tradeDate);
+    });
+  }
+
+  async getMarketTurnoverHistory(limit = 30) {
+    const safeLimit = Math.min(120, Math.max(5, Number(limit) || 30));
+    return this.enqueue(async () => {
+      const reader = await this.connection.runAndReadAll(`
+        SELECT * FROM (
+          SELECT
+            trade_date AS tradeDate,
+            round(shanghai_turnover_yuan / 100000000.0, 2) AS shanghai,
+            round(shenzhen_turnover_yuan / 100000000.0, 2) AS shenzhen,
+            round(total_turnover_yuan / 100000000.0, 2) AS total,
+            collected_at AS collectedAt,
+            source_note AS sourceNote
+          FROM market_turnover_daily
+          ORDER BY trade_date DESC
+          LIMIT $limit
+        )
+        ORDER BY tradeDate
+      `, { limit: safeLimit });
+      const points = reader.getRowObjectsJson();
+      const latest = points[points.length - 1] || null;
+      return {
+        meta: {
+          count: points.length,
+          latestTradeDate: latest?.tradeDate || null,
+          collectedAt: latest?.collectedAt || null,
+          unit: "亿元",
+          scope: "上交所主板A股+科创板，深交所主板A股+创业板",
+        },
+        points,
+      };
+    });
   }
 
   async getTradeDates(boardType, limit = 250) {
@@ -660,11 +767,13 @@ export class MoneyflowDatabase {
           cast((SELECT count(*) FROM sector_constituent_snapshot) AS INTEGER) AS constituentSnapshotCount,
           cast((SELECT count(*) FROM stock_minute_flow) AS INTEGER) AS stockMinuteRowCount,
           cast((SELECT count(DISTINCT market || ':' || code) FROM stock_minute_flow) AS INTEGER) AS stockCount,
+          cast((SELECT count(*) FROM market_turnover_daily) AS INTEGER) AS marketTurnoverDayCount,
           (SELECT max(trade_date) FROM minute_flow) AS latestTradeDate,
           (SELECT max(minute) FROM minute_flow WHERE trade_date = (SELECT max(trade_date) FROM minute_flow)) AS latestMinute,
           (SELECT max(trade_date) FROM stock_minute_flow) AS latestStockTradeDate,
           (SELECT max(minute) FROM stock_minute_flow
             WHERE trade_date = (SELECT max(trade_date) FROM stock_minute_flow)) AS latestStockMinute,
+          (SELECT max(trade_date) FROM market_turnover_daily) AS latestMarketTurnoverDate,
           (SELECT max(collected_at) FROM minute_flow) AS lastCollectedAt
       `);
       const runs = await this.connection.runAndReadAll(`
@@ -691,10 +800,26 @@ export class MoneyflowDatabase {
         ORDER BY started_at DESC
         LIMIT 1
       `);
+      const turnoverRuns = await this.connection.runAndReadAll(`
+        SELECT
+          run_id AS runId,
+          reason,
+          started_at AS startedAt,
+          finished_at AS finishedAt,
+          status,
+          dates_requested AS datesRequested,
+          dates_succeeded AS datesSucceeded,
+          rows_upserted AS rowsUpserted,
+          error_message AS errorMessage
+        FROM market_turnover_runs
+        ORDER BY started_at DESC
+        LIMIT 1
+      `);
       return {
         ...reader.getRowObjectsJson()[0],
         lastRun: runs.getRowObjectsJson()[0] || null,
         lastStockRun: stockRuns.getRowObjectsJson()[0] || null,
+        lastMarketTurnoverRun: turnoverRuns.getRowObjectsJson()[0] || null,
       };
     });
   }

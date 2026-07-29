@@ -1,6 +1,6 @@
 # A 股板块资金流 Dashboard
 
-一个参考“板块资金流向”截图实现的本地全栈 Dashboard。Node.js 采集器在交易时段每分钟读取东方财富公开行情，原始 1 分钟累计资金流写入 DuckDB，SQL 视图聚合成 5 分钟曲线，React 前端每 60 秒读取本地 API。独立的个股历史采集器每 5 分钟抓取所跟踪行业的主力净流入前 5 成分股，并回补这些个股当日完整的 1 分钟资金流。
+一个参考“板块资金流向”截图实现的本地全栈 Dashboard。Node.js 采集器在交易时段每分钟读取东方财富公开行情，原始 1 分钟累计资金流写入 DuckDB，SQL 视图聚合成 5 分钟曲线，React 前端每 60 秒读取本地 API。独立的个股历史采集器每 5 分钟抓取所跟踪行业的主力净流入前 5 成分股，并回补这些个股当日完整的 1 分钟资金流。市场成交额采集器从沪深交易所官方每日概况回补最近 30 个交易日，在页面显示 A 股成交额曲线。
 
 ## 本地运行
 
@@ -19,6 +19,7 @@ npm test
 npm run db:status
 npm run collect
 npm run collect:stocks
+npm run collect:turnover
 ```
 
 数据库默认位于 `data/moneyflow.duckdb`，不会提交到 Git。
@@ -54,6 +55,7 @@ docker compose logs -f moneyflow
 docker compose exec moneyflow npm run db:status
 docker compose exec moneyflow npm run collect
 docker compose exec moneyflow npm run collect:stocks
+docker compose exec moneyflow npm run collect:turnover
 docker compose down
 ```
 
@@ -90,6 +92,12 @@ docker run -d --name moneyflow -p 4173:4173 -v moneyflow_data:/app/data moneyflo
   → 去重后回补个股完整当日1分钟资金流
   → DuckDB stock_minute_flow / stock_flow_5m
   → GET /api/sector-stocks
+
+腾讯指数日线（仅用于交易日历）
+  → 上交所 / 深交所官方每日市场概况
+  → DuckDB market_turnover_daily
+  → GET /api/market-turnover?limit=30
+  → React 30日A股成交额曲线
 ```
 
 本地 API：
@@ -100,8 +108,10 @@ docker run -d --name moneyflow -p 4173:4173 -v moneyflow_data:/app/data moneyflo
 - `GET /api/flows?boardType=industry&flowType=main&interval=1m&limit=18`：1分钟曲线
 - `GET /api/flows?boardType=industry&flowType=main&interval=5m&limit=18`：5分钟曲线（默认）
 - `GET /api/sector-stocks?boardType=industry&boardCode=BK1036&tradeDate=latest&limit=5`：板块个股资金前5
+- `GET /api/market-turnover?limit=30`：最近30个已入库交易日的A股成交额
 - `POST /api/collect`：手动触发一次采集
 - `POST /api/collect-stocks`：手动触发一次成分股与个股历史采集
+- `POST /api/collect-turnover`：手动触发一次A股成交额回补
 
 ## 数据路径
 
@@ -159,6 +169,16 @@ increment_5m[t] = cumulative_5m[t] - cumulative_5m[t-1]
 
 同一股票可能属于多个板块，分钟资金流只保存一份；板块归属通过快照表关联。个股接口每次返回完整当日分钟序列，因此默认每 5 分钟回补一次即可得到 1 分钟历史，不需要对每只股票每分钟重复发起请求。
 
+### 5. A股成交额历史
+
+最近 30 个交易日的成交额使用沪深交易所官方每日市场概况，按以下口径求和：
+
+```text
+A股成交额 = 上交所主板A股 + 科创板 + 深交所主板A股 + 创业板A股
+```
+
+不包含 B 股、基金和债券。原始金额统一按元写入 `market_turnover_daily`，API 转为亿元。首次启动回补 30 个交易日；之后每轮只请求缺失日期和最新交易日，避免重复请求历史数据。
+
 ## 运行参数
 
 可通过环境变量调整：
@@ -176,6 +196,10 @@ increment_5m[t] = cumulative_5m[t] - cumulative_5m[t-1]
 - `STOCK_BOARDS_PER_TYPE=30`：每个板块体系跟踪的板块数量
 - `STOCKS_PER_BOARD=5`：每个板块按主力净流入保留的成分股数量
 - `STOCK_FETCH_CONCURRENCY=4`：个股分钟接口并发数
+- `MARKET_TURNOVER_ENABLED=1`：启用A股成交额历史采集
+- `MARKET_TURNOVER_COLLECT_INTERVAL_MS=600000`：成交额检查间隔，默认10分钟
+- `MARKET_TURNOVER_DAYS=30`：页面和首次回补的交易日数量
+- `MARKET_TURNOVER_FETCH_CONCURRENCY=4`：沪深交易所历史回补并发数
 - `FORCE_COLLECT=1`：测试时忽略交易时段限制
 
 板块目录、成分股和分钟接口均有备用域名重试。若公开接口不可达，真实表不会写入伪数据；已有成分股快照可以用于继续尝试个股分钟回补。长期稳定运行仍应增加官方交易日历、缺口告警，并评估有 SLA 的授权数据源。
