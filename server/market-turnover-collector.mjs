@@ -8,6 +8,7 @@ import {
 } from "./config.mjs";
 import { mapWithConcurrency } from "./provider/eastmoney.mjs";
 import { fetchMarketTurnoverDay, fetchTradingDates } from "./provider/market-turnover.mjs";
+import { MarketTurnoverEstimator } from "./market-turnover-estimator.mjs";
 
 export class MarketTurnoverCollector {
   constructor(database) {
@@ -16,6 +17,7 @@ export class MarketTurnoverCollector {
     this.timer = null;
     this.startupTimer = null;
     this.lastSummary = null;
+    this.estimator = new MarketTurnoverEstimator();
   }
 
   async collect(reason = "manual") {
@@ -117,6 +119,12 @@ export class MarketTurnoverCollector {
       intervalMs: marketTurnoverCollectIntervalMs,
       days: marketTurnoverDays,
       lastSummary: this.lastSummary,
+      estimator: this.estimator.getStatus(),
     };
+  }
+
+  async getHistory(limit = 30) {
+    const payload = await this.database.getMarketTurnoverHistory(limit);
+    return this.estimator.enhanceHistory(payload, limit);
   }
 }

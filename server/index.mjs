@@ -63,7 +63,7 @@ const server = http.createServer(async (request, response) => {
     }
     if (url.pathname === "/api/market-turnover" && request.method === "GET") {
       const limit = Number(url.searchParams.get("limit") || 30);
-      return sendJson(response, 200, await database.getMarketTurnoverHistory(limit));
+      return sendJson(response, 200, await marketTurnoverCollector.getHistory(limit));
     }
     if (url.pathname === "/api/trade-dates" && request.method === "GET") {
       const boardType = url.searchParams.get("boardType") === "concept" ? "concept" : "industry";

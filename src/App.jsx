@@ -141,8 +141,14 @@ function makeDemoSeries(boardType, interval) {
 }
 
 function formatYi(value, signed = false) {
+  if (!Number.isFinite(value)) return "--";
   const prefix = signed && value > 0 ? "+" : "";
   return `${prefix}${value.toFixed(Math.abs(value) >= 10 ? 1 : 2)}亿`;
+}
+
+function formatPct(value) {
+  if (!Number.isFinite(value)) return "--";
+  return `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
 }
 
 function formatTurnoverYi(value) {
@@ -272,10 +278,19 @@ function MarketTurnoverChart({ points }) {
   const plotHeight = height - margin.top - margin.bottom;
   const maxValue = Math.max(1, ...points.map((point) => point.total));
   const bound = Math.ceil((maxValue * 1.08) / 2000) * 2000;
-  const average = points.reduce((sum, point) => sum + point.total, 0) / Math.max(points.length, 1);
+  const officialPoints = points.filter((point) => !point.isEstimate);
+  const average = officialPoints.reduce((sum, point) => sum + point.total, 0) / Math.max(officialPoints.length, 1);
   const x = (index) => margin.left + (index / Math.max(points.length - 1, 1)) * plotWidth;
   const y = (value) => margin.top + ((bound - value) / bound) * plotHeight;
   const line = points.map((point, index) => `${index ? "L" : "M"}${x(index).toFixed(1)},${y(point.total).toFixed(1)}`).join(" ");
+  const latestIsEstimate = Boolean(points[points.length - 1]?.isEstimate);
+  const solidCount = latestIsEstimate ? points.length - 1 : points.length;
+  const solidLine = points.slice(0, solidCount)
+    .map((point, index) => `${index ? "L" : "M"}${x(index).toFixed(1)},${y(point.total).toFixed(1)}`)
+    .join(" ");
+  const estimateLine = latestIsEstimate && points.length > 1
+    ? points.slice(-2).map((point, offset) => `${offset ? "L" : "M"}${x(points.length - 2 + offset).toFixed(1)},${y(point.total).toFixed(1)}`).join(" ")
+    : "";
   const area = `${line} L${x(points.length - 1).toFixed(1)},${y(0).toFixed(1)} L${x(0).toFixed(1)},${y(0).toFixed(1)} Z`;
   const yTicks = [0, bound / 3, (bound * 2) / 3, bound];
   const tickStep = Math.max(1, Math.ceil((points.length - 1) / 6));
@@ -285,7 +300,7 @@ function MarketTurnoverChart({ points }) {
     <div className="turnover-chart-scroll" aria-label="过去30个交易日A股成交额曲线，可横向滚动">
       <svg className="turnover-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="turnover-chart-title turnover-chart-desc">
         <title id="turnover-chart-title">过去30个交易日A股成交额曲线</title>
-        <desc id="turnover-chart-desc">上交所主板A股和科创板，加深交所主板A股和创业板，单位亿元。</desc>
+        <desc id="turnover-chart-desc">上交所主板A股和科创板，加深交所主板A股和创业板，单位亿元；虚线末段为盘中预估。</desc>
         <defs>
           <linearGradient id="turnover-fill" x1="0" y1="0" x2="0" y2="1">
             <stop offset="0%" stopColor="#ef5c1a" stopOpacity="0.24" />
@@ -310,15 +325,21 @@ function MarketTurnoverChart({ points }) {
         })}
         <line x1={margin.left} x2={width - margin.right} y1={y(average)} y2={y(average)} className="turnover-average-line" />
         <text x={width - margin.right} y={y(average) - 8} textAnchor="end" className="turnover-average-label">
-          30日均值 {formatTurnoverYi(average)}
+          正式日均值 {formatTurnoverYi(average)}
         </text>
         <path d={area} fill="url(#turnover-fill)" />
-        <path d={line} fill="none" stroke="#ef5c1a" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+        {solidLine ? <path d={solidLine} fill="none" stroke="#ef5c1a" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /> : null}
+        {estimateLine ? <path d={estimateLine} className="turnover-estimate-segment" fill="none" /> : null}
         {points.map((point, index) => (
-          <circle key={point.tradeDate} cx={x(index)} cy={y(point.total)} r={index === points.length - 1 ? 5 : 3} className="turnover-point">
-            <title>{`${point.tradeDate} A股 ${formatTurnoverYi(point.total)}（沪 ${formatTurnoverYi(point.shanghai)} / 深 ${formatTurnoverYi(point.shenzhen)}）`}</title>
+          <circle key={point.tradeDate} cx={x(index)} cy={y(point.total)} r={index === points.length - 1 ? 5 : 3} className={`turnover-point${point.isEstimate ? " is-estimate" : ""}`}>
+            <title>{`${point.tradeDate} A股 ${point.isEstimate ? "预估 " : ""}${formatTurnoverYi(point.total)}（沪 ${formatTurnoverYi(point.shanghai)} / 深 ${formatTurnoverYi(point.shenzhen)}）${point.isEstimate ? `；已成交 ${formatTurnoverYi(point.observedTotal)}，观测至 ${point.observedAt}` : ""}`}</title>
           </circle>
         ))}
+        {latestIsEstimate ? (
+          <text x={x(points.length - 1) - 10} y={Math.max(18, y(points[points.length - 1].total) - 12)} textAnchor="end" className="turnover-estimate-label">
+            预估
+          </text>
+        ) : null}
         <text x="18" y={margin.top + plotHeight / 2} transform={`rotate(-90 18 ${margin.top + plotHeight / 2})`} textAnchor="middle" className="axis-title">
           成交额（亿元）
         </text>
@@ -331,7 +352,9 @@ function MarketTurnoverPanel({ payload, status }) {
   const points = payload.points || [];
   const latest = points[points.length - 1];
   const previous = points[points.length - 2];
-  const average = points.reduce((sum, point) => sum + point.total, 0) / Math.max(points.length, 1);
+  const officialPoints = points.filter((point) => !point.isEstimate);
+  const average = officialPoints.reduce((sum, point) => sum + point.total, 0) / Math.max(officialPoints.length, 1);
+  const isEstimate = Boolean(latest?.isEstimate);
   const dayChange = latest && previous && previous.total
     ? ((latest.total - previous.total) / previous.total) * 100
     : null;
@@ -352,15 +375,25 @@ function MarketTurnoverPanel({ payload, status }) {
       {points.length ? (
         <>
           <div className="turnover-kpis" aria-label="A股成交额摘要">
-            <div><span>最新成交额</span><strong>{formatTurnoverYi(latest.total)}</strong><small>{latest.tradeDate}</small></div>
-            <div><span>30日均值</span><strong>{formatTurnoverYi(average)}</strong><small>{points.length} 个交易日</small></div>
             <div>
-              <span>较前一日</span>
+              <span>{isEstimate ? "今日成交额预估" : "最新成交额"}{isEstimate ? <em className="estimate-badge">预估</em> : null}</span>
+              <strong>{isEstimate ? "≈" : ""}{formatTurnoverYi(latest.total)}</strong>
+              <small>{latest.tradeDate}{isEstimate ? ` · 已成交 ${formatTurnoverYi(latest.observedTotal)}` : ""}</small>
+            </div>
+            <div><span>正式日均值</span><strong>{formatTurnoverYi(average)}</strong><small>最近 {officialPoints.length} 个正式交易日</small></div>
+            <div>
+              <span>{isEstimate ? "预估较前一日" : "较前一日"}</span>
               <strong className={dayChange >= 0 ? "positive" : "negative"}>{dayChange === null ? "--" : `${dayChange >= 0 ? "+" : ""}${dayChange.toFixed(1)}%`}</strong>
               <small>{previous ? `${formatTurnoverYi(previous.total)} → ${formatTurnoverYi(latest.total)}` : "等待更多数据"}</small>
             </div>
           </div>
           <MarketTurnoverChart points={points} />
+          {isEstimate ? (
+            <div className="turnover-estimate-note">
+              <strong>盘中预估，非交易所收盘正式值</strong>
+              <span>已成交额 ÷ 近 {latest.historyDays} 日同一时点成交完成度中位数，再向近期正式日成交额适度收缩；当前观测至 {latest.observedAt}，历史完成度约 {(latest.completionRatio * 100).toFixed(1)}%。收盘后自动替换为沪深交易所正式值。</span>
+            </div>
+          ) : null}
         </>
       ) : (
         <div className="turnover-empty">正在等待官方交易所数据首次回补，完成后将在这里显示真实曲线。</div>
@@ -396,6 +429,53 @@ function FundBuckets({ series, period }) {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+function StockLeadersPanel({ board, payload, status, onRetry }) {
+  const stocks = payload.stocks || [];
+  const latestMinute = payload.meta?.latestMinute;
+  const snapshotMinute = payload.meta?.snapshotMinute;
+
+  return (
+    <div className="stock-panel">
+      <p className="eyebrow">STOCK LEADERS</p>
+      <h2>Top5 净流入个股</h2>
+      <div className="stock-panel-intro">
+        <p className="panel-copy">
+          {board ? `${board.name} · 按主力净流入排序` : "请先选择一个板块"}
+        </p>
+        <div className={`stock-data-status status-${status.state}`} aria-live="polite">
+          <span className="status-dot" />
+          <span>{latestMinute ? `数据至 ${latestMinute}` : snapshotMinute ? `快照 ${snapshotMinute}` : status.message}</span>
+        </div>
+      </div>
+      {stocks.length ? (
+        <div className="stock-leader-list" aria-label={`${board?.name || "所选板块"}主力净流入前五个股`}>
+          {stocks.map((stock, index) => {
+            const selectedFlow = Number.isFinite(stock.selectedFlow) ? stock.selectedFlow : stock.snapshotMain;
+            return (
+              <div className="stock-leader-row" key={`${stock.market}:${stock.code}`}>
+                <span className="rank-index">{String(index + 1).padStart(2, "0")}</span>
+                <span className="stock-identity">
+                  <strong>{stock.name}</strong>
+                  <small>{stock.code}{Number.isFinite(stock.price) ? ` · ${stock.price.toFixed(2)}元` : ""}</small>
+                </span>
+                <span className="stock-values">
+                  <strong className={selectedFlow >= 0 ? "positive" : "negative"}>{formatYi(selectedFlow, true)}</strong>
+                  <small className={stock.changePct >= 0 ? "positive" : "negative"}>{formatPct(stock.changePct)}</small>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="stock-empty">
+          <p>{status.message}</p>
+          {board && status.state !== "loading" ? <button type="button" onClick={onRetry}>重新读取</button> : null}
+        </div>
+      )}
     </div>
   );
 }
@@ -445,6 +525,10 @@ export function App() {
   const [methodOpen, setMethodOpen] = useState(false);
   const [turnoverPayload, setTurnoverPayload] = useState({ meta: {}, points: [] });
   const [turnoverStatus, setTurnoverStatus] = useState({ state: "loading", message: "正在读取官方成交额历史…" });
+  const [selectedBoardCode, setSelectedBoardCode] = useState("");
+  const [stockLeadersPayload, setStockLeadersPayload] = useState({ meta: {}, stocks: [] });
+  const [stockLeadersStatus, setStockLeadersStatus] = useState({ state: "loading", message: "正在读取板块个股…" });
+  const stockRequestRef = useRef(0);
   const demoSeries = useMemo(() => makeDemoSeries(boardType, interval), [boardType, interval]);
   const selectedTradeDate = tradeDate === "latest"
     ? tradeDates[0]?.tradeDate || "latest"
@@ -504,19 +588,6 @@ export function App() {
     }
   }, [boardType, flowType, interval, topN, tradeDate]);
 
-  const refreshLive = async () => {
-    setStatus({ state: "loading", message: "后台正在立即采集并写入 DuckDB…" });
-    try {
-      const response = await fetch("/api/collect", { method: "POST" });
-      const summary = await response.json();
-      if (!response.ok) throw new Error(summary.error || `采集 API ${response.status}`);
-      await loadTradeDates();
-      await loadFromDatabase();
-    } catch (error) {
-      setStatus({ state: "fallback", message: `${error.message || "采集失败"} · 已保留数据库中的最近数据` });
-    }
-  };
-
   const loadMarketTurnover = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setTurnoverStatus({ state: "loading", message: "正在读取官方成交额历史…" });
     try {
@@ -525,7 +596,13 @@ export function App() {
       const payload = await response.json();
       setTurnoverPayload(payload);
       if (payload.points?.length) {
-        setTurnoverStatus({ state: "live", message: `官方数据至 ${payload.meta.latestTradeDate} · 每60秒检查更新` });
+        const estimate = payload.meta?.estimate;
+        setTurnoverStatus({
+          state: "live",
+          message: payload.meta?.isLatestEstimate
+            ? `盘中预估至 ${estimate?.observedAt || "最新5分钟"} · 每60秒更新`
+            : `官方数据至 ${payload.meta.latestTradeDate} · 每60秒检查更新`,
+        });
       } else {
         setTurnoverStatus({ state: "loading", message: "首次30日回补进行中" });
       }
@@ -573,7 +650,66 @@ export function App() {
     };
   }, [ranked]);
 
+  const latestRanking = useMemo(
+    () => [...ranked].sort((a, b) => b.latest - a.latest).slice(0, 10),
+    [ranked],
+  );
+  const selectedBoard = latestRanking.find((item) => item.code === selectedBoardCode)
+    || latestRanking[0]
+    || null;
+  const selectedBoardForStocks = selectedBoard?.code || "";
+
+  useEffect(() => {
+    setSelectedBoardCode((current) => (
+      latestRanking.some((item) => item.code === current)
+        ? current
+        : latestRanking[0]?.code || ""
+    ));
+  }, [latestRanking]);
+
+  const loadStockLeaders = useCallback(async ({ silent = false } = {}) => {
+    const requestId = stockRequestRef.current + 1;
+    stockRequestRef.current = requestId;
+    if (!selectedBoardForStocks) {
+      setStockLeadersPayload({ meta: {}, stocks: [] });
+      setStockLeadersStatus({ state: "fallback", message: "暂无可查询的板块" });
+      return;
+    }
+    if (!silent) {
+      setStockLeadersPayload({ meta: {}, stocks: [] });
+      setStockLeadersStatus({ state: "loading", message: `正在读取${selectedBoard?.name || "所选板块"}个股…` });
+    }
+    try {
+      const query = new URLSearchParams({
+        boardType,
+        boardCode: selectedBoardForStocks,
+        tradeDate: selectedTradeDate,
+        flowType: "main",
+        limit: "5",
+      });
+      const response = await fetch(`/api/sector-stocks?${query}`);
+      if (!response.ok) throw new Error(`个股 API ${response.status}`);
+      const payload = await response.json();
+      if (requestId !== stockRequestRef.current) return;
+      setStockLeadersPayload(payload);
+      setStockLeadersStatus(payload.stocks?.length
+        ? { state: "live", message: "真实个股资金数据" }
+        : { state: "fallback", message: "所选日期暂无个股快照，等待后台5分钟采集" });
+    } catch (error) {
+      if (requestId !== stockRequestRef.current) return;
+      setStockLeadersPayload({ meta: {}, stocks: [] });
+      setStockLeadersStatus({ state: "fallback", message: error.message || "个股数据暂不可用" });
+    }
+  }, [boardType, selectedBoard?.name, selectedBoardForStocks, selectedTradeDate]);
+
+  useEffect(() => {
+    void loadStockLeaders();
+    const timer = window.setInterval(() => void loadStockLeaders({ silent: true }), 60_000);
+    return () => window.clearInterval(timer);
+  }, [loadStockLeaders]);
+
   const date = formatTradeDateLabel(selectedTradeDate);
+  const chartActiveName = activeName || selectedBoard?.name || "";
 
   return (
     <main className="dashboard-shell">
@@ -587,9 +723,6 @@ export function App() {
         </div>
         <div className="header-actions">
           <button type="button" className="text-button" onClick={() => setMethodOpen(true)}>数据口径</button>
-          <button type="button" className="refresh-button" onClick={refreshLive} disabled={status.state === "loading"}>
-            {status.state === "loading" ? "采集中…" : "立即采集"}
-          </button>
         </div>
       </header>
 
@@ -615,6 +748,7 @@ export function App() {
             onChange={(event) => {
               setBoardType(event.target.value);
               setTradeDate("latest");
+              setSelectedBoardCode("");
             }}
           >
             <option value="industry">东财行业</option>
@@ -689,7 +823,7 @@ export function App() {
           flowType={flowType}
           interval={interval}
           period={period}
-          activeName={activeName}
+          activeName={chartActiveName}
           onActiveName={setActiveName}
         />
       </section>
@@ -706,9 +840,21 @@ export function App() {
         <div className="ranking-panel">
           <p className="eyebrow">LATEST RANKING</p>
           <h2>最新板块排行</h2>
+          <p className="panel-copy">点击板块查看右侧主力净流入 Top5 个股。</p>
           <div className="ranking-list">
-            {[...ranked].sort((a, b) => b.latest - a.latest).slice(0, 10).map((item, index) => (
-              <button key={item.code} type="button" onMouseEnter={() => setActiveName(item.name)} onMouseLeave={() => setActiveName("")} onClick={() => setActiveName(item.name)}>
+            {latestRanking.map((item, index) => (
+              <button
+                key={item.code}
+                type="button"
+                className={item.code === selectedBoardForStocks ? "is-selected" : ""}
+                aria-pressed={item.code === selectedBoardForStocks}
+                onMouseEnter={() => setActiveName(item.name)}
+                onMouseLeave={() => setActiveName("")}
+                onClick={() => {
+                  setSelectedBoardCode(item.code);
+                  setActiveName("");
+                }}
+              >
                 <span className="rank-index">{String(index + 1).padStart(2, "0")}</span>
                 <span className="rank-name">{item.name}</span>
                 <strong className={item.latest >= 0 ? "positive" : "negative"}>{formatYi(item.latest, true)}</strong>
@@ -716,10 +862,16 @@ export function App() {
             ))}
           </div>
         </div>
+        <StockLeadersPanel
+          board={selectedBoard}
+          payload={stockLeadersPayload}
+          status={stockLeadersStatus}
+          onRetry={() => void loadStockLeaders()}
+        />
       </section>
 
       <footer>
-        <p>本地链路：东方财富公开行情与沪深交易所每日概况 → Node 采集器 → DuckDB → 分钟/5分钟及30日成交额 API → 前端60秒轮询。</p>
+        <p>本地链路：东方财富公开行情与沪深交易所每日概况 → Node 采集器 → DuckDB → 板块、个股分钟/5分钟及30日成交额 API → 前端60秒轮询。</p>
         <p>本页面不构成投资建议。资金流为数据商统计口径，不是交易所官方资金进出。</p>
       </footer>
 

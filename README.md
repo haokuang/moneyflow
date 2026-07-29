@@ -96,6 +96,7 @@ docker run -d --name moneyflow -p 4173:4173 -v moneyflow_data:/app/data moneyflo
 腾讯指数日线（仅用于交易日历）
   → 上交所 / 深交所官方每日市场概况
   → DuckDB market_turnover_daily
+  → 盘中叠加上证A股指数 / 深证A指5分钟成交额预估（不入正式表）
   → GET /api/market-turnover?limit=30
   → React 30日A股成交额曲线
 ```
@@ -108,7 +109,7 @@ docker run -d --name moneyflow -p 4173:4173 -v moneyflow_data:/app/data moneyflo
 - `GET /api/flows?boardType=industry&flowType=main&interval=1m&limit=18`：1分钟曲线
 - `GET /api/flows?boardType=industry&flowType=main&interval=5m&limit=18`：5分钟曲线（默认）
 - `GET /api/sector-stocks?boardType=industry&boardCode=BK1036&tradeDate=latest&limit=5`：板块个股资金前5
-- `GET /api/market-turnover?limit=30`：最近30个已入库交易日的A股成交额
+- `GET /api/market-turnover?limit=30`：最近30个A股成交额；当日正式值未发布时，末点带 `isEstimate`、观测时间和算法信息
 - `POST /api/collect`：手动触发一次采集
 - `POST /api/collect-stocks`：手动触发一次成分股与个股历史采集
 - `POST /api/collect-turnover`：手动触发一次A股成交额回补
@@ -178,6 +179,16 @@ A股成交额 = 上交所主板A股 + 科创板 + 深交所主板A股 + 创业�
 ```
 
 不包含 B 股、基金和债券。原始金额统一按元写入 `market_turnover_daily`，API 转为亿元。首次启动回补 30 个交易日；之后每轮只请求缺失日期和最新交易日，避免重复请求历史数据。
+
+盘中正式日值尚未发布时，API 使用上证 A 股指数（000002）和深证 A 指（399107）的 5 分钟成交金额追加一个临时预估点：
+
+```text
+历史完成度 = 近20个完整交易日在当前时点的累计成交额 / 全日成交额的中位数
+直接外推值 = 今日当前累计成交额 / 历史完成度
+最终预估值 = 随完成度提高逐步加权直接外推值，并向近期正式日成交额中位数收缩
+```
+
+10:00 前不发布预估；结果始终不低于已成交额。预估只存在于 API 响应和前端展示，不写入 `market_turnover_daily`，并在交易所正式值发布后自动消失。前端以“≈”、预估徽标、虚线末段和算法说明明确区分。
 
 ## 运行参数
 

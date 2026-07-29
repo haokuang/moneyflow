@@ -487,6 +487,7 @@ export class MoneyflowDatabase {
       const reader = await this.connection.runAndReadAll(`
         SELECT trade_date AS tradeDate
         FROM market_turnover_daily
+        WHERE total_turnover_yuan > 0
         ORDER BY trade_date DESC
         LIMIT $limit
       `, { limit: safeLimit });
@@ -507,6 +508,7 @@ export class MoneyflowDatabase {
             collected_at AS collectedAt,
             source_note AS sourceNote
           FROM market_turnover_daily
+          WHERE total_turnover_yuan > 0
           ORDER BY trade_date DESC
           LIMIT $limit
         )
@@ -767,13 +769,13 @@ export class MoneyflowDatabase {
           cast((SELECT count(*) FROM sector_constituent_snapshot) AS INTEGER) AS constituentSnapshotCount,
           cast((SELECT count(*) FROM stock_minute_flow) AS INTEGER) AS stockMinuteRowCount,
           cast((SELECT count(DISTINCT market || ':' || code) FROM stock_minute_flow) AS INTEGER) AS stockCount,
-          cast((SELECT count(*) FROM market_turnover_daily) AS INTEGER) AS marketTurnoverDayCount,
+          cast((SELECT count(*) FROM market_turnover_daily WHERE total_turnover_yuan > 0) AS INTEGER) AS marketTurnoverDayCount,
           (SELECT max(trade_date) FROM minute_flow) AS latestTradeDate,
           (SELECT max(minute) FROM minute_flow WHERE trade_date = (SELECT max(trade_date) FROM minute_flow)) AS latestMinute,
           (SELECT max(trade_date) FROM stock_minute_flow) AS latestStockTradeDate,
           (SELECT max(minute) FROM stock_minute_flow
             WHERE trade_date = (SELECT max(trade_date) FROM stock_minute_flow)) AS latestStockMinute,
-          (SELECT max(trade_date) FROM market_turnover_daily) AS latestMarketTurnoverDate,
+          (SELECT max(trade_date) FROM market_turnover_daily WHERE total_turnover_yuan > 0) AS latestMarketTurnoverDate,
           (SELECT max(collected_at) FROM minute_flow) AS lastCollectedAt
       `);
       const runs = await this.connection.runAndReadAll(`

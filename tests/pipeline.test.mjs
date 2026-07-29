@@ -6,10 +6,13 @@ import test from "node:test";
 import { MoneyflowDatabase } from "../server/db.mjs";
 import { parseMinuteKlines } from "../server/provider/eastmoney.mjs";
 import {
+  combineAshareIndexTurnover,
+  parseIndexTurnoverKlines,
   parseSseTurnover,
   parseSzseTurnover,
   parseTradingDates,
 } from "../server/provider/market-turnover.mjs";
+import { estimateIntradayMarketTurnover } from "../server/market-turnover-estimator.mjs";
 
 test("parses Eastmoney one-minute cumulative fields without changing units", () => {
   const rows = parseMinuteKlines({ data: { klines: ["2026-07-22 09:31,100000000,-20000000,30000000,40000000,60000000"] } }, {
@@ -54,6 +57,72 @@ test("parses official exchange A-share turnover without mixing B shares or funds
   }]);
   assert.equal(shanghai, 9161.3 * 100_000_000);
   assert.equal(shenzhen, 10168.33 * 100_000_000);
+});
+
+test("parses and combines Shanghai and Shenzhen A-share index turnover bars", () => {
+  const shanghai = parseIndexTurnoverKlines({
+    data: { code: "000002", klines: ["2026-07-29 10:00,1,1,1,1,1,300000000000.00,0"] },
+  }, "shanghai");
+  const shenzhen = parseIndexTurnoverKlines({
+    data: { code: "399107", klines: ["2026-07-29 10:00,1,1,1,1,1,400000000000.00,0"] },
+  }, "shenzhen");
+  assert.deepEqual(combineAshareIndexTurnover(shanghai, shenzhen), [{
+    timestamp: "2026-07-29 10:00",
+    tradeDate: "2026-07-29",
+    minute: "10:00",
+    shanghaiTurnoverYuan: 300000000000,
+    shenzhenTurnoverYuan: 400000000000,
+    totalTurnoverYuan: 700000000000,
+  }]);
+});
+
+test("estimates current full-day turnover from robust historical completion and recent official level", () => {
+  const rows = [];
+  for (let day = 20; day <= 25; day += 1) {
+    const tradeDate = `2026-07-${day}`;
+    rows.push({
+      tradeDate,
+      minute: "10:00",
+      shanghaiTurnoverYuan: 2000 * 100_000_000,
+      shenzhenTurnoverYuan: 2250 * 100_000_000,
+      totalTurnoverYuan: 4250 * 100_000_000,
+    });
+    rows.push({
+      tradeDate,
+      minute: "15:00",
+      shanghaiTurnoverYuan: 6000 * 100_000_000,
+      shenzhenTurnoverYuan: 6750 * 100_000_000,
+      totalTurnoverYuan: 12750 * 100_000_000,
+    });
+  }
+  rows.push({
+    tradeDate: "2026-07-29",
+    minute: "10:00",
+    shanghaiTurnoverYuan: 3000 * 100_000_000,
+    shenzhenTurnoverYuan: 4000 * 100_000_000,
+    totalTurnoverYuan: 7000 * 100_000_000,
+  });
+  const officialPoints = Array.from({ length: 6 }, (_, index) => ({
+    tradeDate: `2026-07-${20 + index}`,
+    shanghai: 8000,
+    shenzhen: 9000,
+    total: 17000,
+  }));
+  const estimate = estimateIntradayMarketTurnover(rows, officialPoints);
+  assert.equal(estimate.tradeDate, "2026-07-29");
+  assert.equal(estimate.observedAt, "10:00");
+  assert.equal(estimate.observedTotal, 7000);
+  assert.equal(estimate.completionRatio, 0.25);
+  assert.equal(estimate.historyDays, 6);
+  assert.equal(estimate.total, 21400);
+  assert.equal(estimate.isEstimate, true);
+  assert.match(estimate.method, /历史同期成交占比中位数/);
+  assert.equal(estimateIntradayMarketTurnover(rows, [...officialPoints, {
+    tradeDate: "2026-07-29",
+    shanghai: 11000,
+    shenzhen: 12000,
+    total: 23000,
+  }]), null);
 });
 
 test("persists one-minute rows and aggregates each five-minute bucket with last, not sum", async () => {
@@ -221,6 +290,13 @@ test("persists one-minute rows and aggregates each five-minute bucket with last,
         shenzhenTurnoverYuan: 9000 * 100_000_000,
         totalTurnoverYuan: 17000 * 100_000_000,
         sourceNote: "fixture",
+      },
+      {
+        tradeDate: "2026-07-23",
+        shanghaiTurnoverYuan: 0,
+        shenzhenTurnoverYuan: 0,
+        totalTurnoverYuan: 0,
+        sourceNote: "unpublished fixture",
       },
     ]);
     const turnoverDates = await database.getMarketTurnoverDates(30);
