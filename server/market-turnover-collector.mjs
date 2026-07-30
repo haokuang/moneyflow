@@ -3,6 +3,7 @@ import {
   marketTurnoverCollectIntervalMs,
   marketTurnoverDays,
   marketTurnoverEnabled,
+  marketTurnoverEstimateMaxStaleMs,
   marketTurnoverFetchConcurrency,
   marketTurnoverStartupDelayMs,
 } from "./config.mjs";
@@ -17,7 +18,7 @@ export class MarketTurnoverCollector {
     this.timer = null;
     this.startupTimer = null;
     this.lastSummary = null;
-    this.estimator = new MarketTurnoverEstimator();
+    this.estimator = new MarketTurnoverEstimator({ maxStaleMs: marketTurnoverEstimateMaxStaleMs });
   }
 
   async collect(reason = "manual") {

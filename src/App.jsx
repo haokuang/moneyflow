@@ -74,6 +74,18 @@ const PERIOD_LABELS = {
   afternoon: "下午",
 };
 
+const TRADING_TIME_TICKS = {
+  "full-day": ["09:30", "10:00", "10:30", "11:00", "11:30", "13:00", "13:30", "14:00", "14:30", "15:00"],
+  morning: ["09:30", "10:00", "10:30", "11:00", "11:30"],
+  afternoon: ["13:00", "13:30", "14:00", "14:30", "15:00"],
+};
+
+const MORNING_START = 9 * 60 + 30;
+const MORNING_END = 11 * 60 + 30;
+const AFTERNOON_START = 13 * 60;
+const AFTERNOON_END = 15 * 60;
+const LUNCH_GAP_WIDTH = 42;
+
 const INTERVAL_LABELS = {
   "1m": "1 分钟",
   "5m": "5 分钟",
@@ -173,6 +185,31 @@ function filterPoints(points, period) {
   return points;
 }
 
+function clockMinutes(time) {
+  const [hour, minute] = String(time || "").split(":").map(Number);
+  return Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : MORNING_START;
+}
+
+function tradingTimeX(time, period, left, width) {
+  const minute = clockMinutes(time);
+  if (period === "morning") {
+    const progress = Math.min(1, Math.max(0, (minute - MORNING_START) / (MORNING_END - MORNING_START)));
+    return left + progress * width;
+  }
+  if (period === "afternoon") {
+    const progress = Math.min(1, Math.max(0, (minute - AFTERNOON_START) / (AFTERNOON_END - AFTERNOON_START)));
+    return left + progress * width;
+  }
+
+  const sessionWidth = (width - LUNCH_GAP_WIDTH) / 2;
+  if (minute <= MORNING_END) {
+    const progress = Math.min(1, Math.max(0, (minute - MORNING_START) / (MORNING_END - MORNING_START)));
+    return left + progress * sessionWidth;
+  }
+  const progress = Math.min(1, Math.max(0, (minute - AFTERNOON_START) / (AFTERNOON_END - AFTERNOON_START)));
+  return left + sessionWidth + LUNCH_GAP_WIDTH + progress * sessionWidth;
+}
+
 function distributeLabels(items, minY, maxY, gap) {
   const sorted = [...items].sort((a, b) => a.rawY - b.rawY);
   sorted.forEach((item, index) => {
@@ -190,7 +227,16 @@ function distributeLabels(items, minY, maxY, gap) {
   return sorted;
 }
 
-function FlowChart({ series, flowType, interval, period, activeName, onActiveName }) {
+function FlowChart({
+  series,
+  flowType,
+  interval,
+  period,
+  activeName,
+  pinnedName,
+  onHoverName,
+  onPinnedName,
+}) {
   const width = 1180;
   const height = 600;
   const margin = { top: 26, right: 326, bottom: 54, left: 66 };
@@ -201,7 +247,7 @@ function FlowChart({ series, flowType, interval, period, activeName, onActiveNam
     .filter((item) => item.points.length);
   const values = visible.flatMap((item) => item.points.map((point) => point[flowType]));
   const bound = Math.max(4, ...values.map((value) => Math.abs(value))) * 1.12;
-  const x = (index, count) => margin.left + (index / Math.max(count - 1, 1)) * plotWidth;
+  const x = (time) => tradingTimeX(time, period, margin.left, plotWidth);
   const y = (value) => margin.top + ((bound - value) / (bound * 2)) * plotHeight;
   const latest = visible.map((item) => {
     const value = item.points[item.points.length - 1][flowType];
@@ -210,17 +256,13 @@ function FlowChart({ series, flowType, interval, period, activeName, onActiveNam
   const labels = distributeLabels(latest, margin.top + 6, margin.top + plotHeight - 6, 18);
   const labelMap = new Map(labels.map((item) => [item.name, item]));
   const tickValues = [-bound, -bound / 2, 0, bound / 2, bound];
-  const samplePoints = visible[0]?.points || [];
-  const timeTicks = samplePoints
-    .map((point, index) => ({ ...point, index }))
-    .filter((point, index, arr) => index === 0 || index === arr.length - 1 || point.time.endsWith(":30") || point.time.endsWith(":00"))
-    .filter((point, index, arr) => index === 0 || point.index - arr[index - 1].index >= 4);
+  const timeTicks = TRADING_TIME_TICKS[period] || TRADING_TIME_TICKS["full-day"];
 
   return (
     <div className="chart-scroll" aria-label="板块资金流向曲线，可横向滚动">
       <svg className="flow-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="chart-title chart-desc">
         <title id="chart-title">板块{FLOW_TYPES[flowType].label}{INTERVAL_LABELS[interval]}净流入累计曲线</title>
-        <desc id="chart-desc">红色表示净流入，绿色表示净流出，单位亿元。</desc>
+        <desc id="chart-desc">红色表示净流入，绿色表示净流出，单位亿元；横轴固定展示完整交易时段，午休区间压缩。</desc>
         <rect x="0" y="0" width={width} height={height} fill="#fff" />
         {tickValues.map((tick) => (
           <g key={tick}>
@@ -231,10 +273,10 @@ function FlowChart({ series, flowType, interval, period, activeName, onActiveNam
           </g>
         ))}
         {timeTicks.map((tick) => (
-          <g key={`${tick.time}-${tick.index}`}>
-            <line x1={x(tick.index, samplePoints.length)} x2={x(tick.index, samplePoints.length)} y1={margin.top} y2={margin.top + plotHeight} className="vertical-grid" />
-            <text x={x(tick.index, samplePoints.length)} y={height - 22} textAnchor="middle" className="axis-text">
-              {tick.time}
+          <g key={tick}>
+            <line x1={x(tick)} x2={x(tick)} y1={margin.top} y2={margin.top + plotHeight} className="vertical-grid" />
+            <text x={x(tick)} y={height - 22} textAnchor="middle" className="axis-text">
+              {tick}
             </text>
           </g>
         ))}
@@ -243,8 +285,10 @@ function FlowChart({ series, flowType, interval, period, activeName, onActiveNam
         </text>
         {visible.map((item) => {
           const isActive = !activeName || activeName === item.name;
-          const finalValue = item.points[item.points.length - 1][flowType];
-          const path = item.points.map((point, index) => `${index ? "L" : "M"}${x(index, item.points.length).toFixed(1)},${y(point[flowType]).toFixed(1)}`).join(" ");
+          const finalPoint = item.points[item.points.length - 1];
+          const finalValue = finalPoint[flowType];
+          const finalX = x(finalPoint.time);
+          const path = item.points.map((point, index) => `${index ? "L" : "M"}${x(point.time).toFixed(1)},${y(point[flowType]).toFixed(1)}`).join(" ");
           const label = labelMap.get(item.name);
           const color = finalValue >= 0 ? "#c83b35" : "#087f64";
           return (
@@ -252,12 +296,22 @@ function FlowChart({ series, flowType, interval, period, activeName, onActiveNam
               key={item.code}
               className="series-group"
               opacity={isActive ? 1 : 0.12}
-              onMouseEnter={() => onActiveName(item.name)}
-              onMouseLeave={() => onActiveName("")}
-              onClick={() => onActiveName(activeName === item.name ? "" : item.name)}
+              onMouseEnter={() => onHoverName(item.name)}
+              onMouseLeave={() => onHoverName("")}
+              onClick={() => onPinnedName(pinnedName === item.name ? "" : item.name)}
             >
               <path d={path} fill="none" stroke={color} strokeWidth={activeName === item.name ? 3.2 : 1.7} strokeLinecap="round" strokeLinejoin="round" />
-              <line x1={margin.left + plotWidth} y1={y(finalValue)} x2={margin.left + plotWidth + 54} y2={label?.labelY || y(finalValue)} stroke={color} strokeWidth="1" opacity="0.45" />
+              <circle cx={finalX} cy={y(finalValue)} r={activeName === item.name ? 3.2 : 2.2} fill={color} />
+              <line
+                x1={finalX}
+                y1={y(finalValue)}
+                x2={margin.left + plotWidth + 54}
+                y2={label?.labelY || y(finalValue)}
+                stroke={color}
+                strokeWidth="1"
+                strokeDasharray={finalX < margin.left + plotWidth - 1 ? "3 4" : undefined}
+                opacity="0.38"
+              />
               <circle cx={margin.left + plotWidth + 54} cy={label?.labelY || y(finalValue)} r="2.8" fill={color} />
               <text x={margin.left + plotWidth + 67} y={(label?.labelY || y(finalValue)) + 4.5} fill={color} className="end-label">
                 {item.name} <tspan fontWeight="700">{formatYi(finalValue, true)}</tspan>
@@ -284,6 +338,7 @@ function MarketTurnoverChart({ points }) {
   const y = (value) => margin.top + ((bound - value) / bound) * plotHeight;
   const line = points.map((point, index) => `${index ? "L" : "M"}${x(index).toFixed(1)},${y(point.total).toFixed(1)}`).join(" ");
   const latestIsEstimate = Boolean(points[points.length - 1]?.isEstimate);
+  const latestIsStaleEstimate = Boolean(points[points.length - 1]?.isStaleEstimate);
   const solidCount = latestIsEstimate ? points.length - 1 : points.length;
   const solidLine = points.slice(0, solidCount)
     .map((point, index) => `${index ? "L" : "M"}${x(index).toFixed(1)},${y(point.total).toFixed(1)}`)
@@ -332,12 +387,12 @@ function MarketTurnoverChart({ points }) {
         {estimateLine ? <path d={estimateLine} className="turnover-estimate-segment" fill="none" /> : null}
         {points.map((point, index) => (
           <circle key={point.tradeDate} cx={x(index)} cy={y(point.total)} r={index === points.length - 1 ? 5 : 3} className={`turnover-point${point.isEstimate ? " is-estimate" : ""}`}>
-            <title>{`${point.tradeDate} A股 ${point.isEstimate ? "预估 " : ""}${formatTurnoverYi(point.total)}（沪 ${formatTurnoverYi(point.shanghai)} / 深 ${formatTurnoverYi(point.shenzhen)}）${point.isEstimate ? `；已成交 ${formatTurnoverYi(point.observedTotal)}，观测至 ${point.observedAt}` : ""}`}</title>
+            <title>{`${point.tradeDate} A股 ${point.isStaleEstimate ? "缓存预估 " : point.isEstimate ? "预估 " : ""}${formatTurnoverYi(point.total)}（沪 ${formatTurnoverYi(point.shanghai)} / 深 ${formatTurnoverYi(point.shenzhen)}）${point.isEstimate ? `；已成交 ${formatTurnoverYi(point.observedTotal)}，观测至 ${point.observedAt}` : ""}`}</title>
           </circle>
         ))}
         {latestIsEstimate ? (
           <text x={x(points.length - 1) - 10} y={Math.max(18, y(points[points.length - 1].total) - 12)} textAnchor="end" className="turnover-estimate-label">
-            预估
+            {latestIsStaleEstimate ? "缓存预估" : "预估"}
           </text>
         ) : null}
         <text x="18" y={margin.top + plotHeight / 2} transform={`rotate(-90 18 ${margin.top + plotHeight / 2})`} textAnchor="middle" className="axis-title">
@@ -355,6 +410,7 @@ function MarketTurnoverPanel({ payload, status }) {
   const officialPoints = points.filter((point) => !point.isEstimate);
   const average = officialPoints.reduce((sum, point) => sum + point.total, 0) / Math.max(officialPoints.length, 1);
   const isEstimate = Boolean(latest?.isEstimate);
+  const isStaleEstimate = Boolean(latest?.isStaleEstimate);
   const dayChange = latest && previous && previous.total
     ? ((latest.total - previous.total) / previous.total) * 100
     : null;
@@ -376,7 +432,7 @@ function MarketTurnoverPanel({ payload, status }) {
         <>
           <div className="turnover-kpis" aria-label="A股成交额摘要">
             <div>
-              <span>{isEstimate ? "今日成交额预估" : "最新成交额"}{isEstimate ? <em className="estimate-badge">预估</em> : null}</span>
+              <span>{isEstimate ? "今日成交额预估" : "最新成交额"}{isEstimate ? <em className="estimate-badge">{isStaleEstimate ? "缓存预估" : "预估"}</em> : null}</span>
               <strong>{isEstimate ? "≈" : ""}{formatTurnoverYi(latest.total)}</strong>
               <small>{latest.tradeDate}{isEstimate ? ` · 已成交 ${formatTurnoverYi(latest.observedTotal)}` : ""}</small>
             </div>
@@ -390,8 +446,11 @@ function MarketTurnoverPanel({ payload, status }) {
           <MarketTurnoverChart points={points} />
           {isEstimate ? (
             <div className="turnover-estimate-note">
-              <strong>盘中预估，非交易所收盘正式值</strong>
-              <span>已成交额 ÷ 近 {latest.historyDays} 日同一时点成交完成度中位数，再向近期正式日成交额适度收缩；当前观测至 {latest.observedAt}，历史完成度约 {(latest.completionRatio * 100).toFixed(1)}%。收盘后自动替换为沪深交易所正式值。</span>
+              <strong>{isStaleEstimate ? "缓存预估，行情源正在重试" : "盘中预估，非交易所收盘正式值"}</strong>
+              <span>
+                已成交额 ÷ 近 {latest.historyDays} 日同一时点{latest.profileBasis === "volume-proxy" ? "指数成交量完成度中位数（作为成交额完成度代理）" : "成交额完成度中位数"}，再向近期正式日成交额适度收缩；当前观测至 {latest.observedAt}，历史完成度约 {(latest.completionRatio * 100).toFixed(1)}%。
+                {isStaleEstimate ? ` 当前沿用最近成功数据，缓存约 ${latest.sourceAgeSeconds} 秒；上游恢复后自动更新。` : " 收盘后自动替换为沪深交易所正式值。"}
+              </span>
             </div>
           ) : null}
         </>
@@ -433,26 +492,18 @@ function FundBuckets({ series, period }) {
   );
 }
 
-function StockLeadersPanel({ board, payload, status, onRetry }) {
-  const stocks = payload.stocks || [];
-  const latestMinute = payload.meta?.latestMinute;
-  const snapshotMinute = payload.meta?.snapshotMinute;
+function StockLeaderGroup({ board, payload, status, direction }) {
+  const stocks = payload?.stocks || [];
+  const directionLabel = direction === "outflow" ? "净流出" : "净流入";
 
   return (
-    <div className="stock-panel">
-      <p className="eyebrow">STOCK LEADERS</p>
-      <h2>Top5 净流入个股</h2>
-      <div className="stock-panel-intro">
-        <p className="panel-copy">
-          {board ? `${board.name} · 按主力净流入排序` : "请先选择一个板块"}
-        </p>
-        <div className={`stock-data-status status-${status.state}`} aria-live="polite">
-          <span className="status-dot" />
-          <span>{latestMinute ? `数据至 ${latestMinute}` : snapshotMinute ? `快照 ${snapshotMinute}` : status.message}</span>
-        </div>
+    <section className={`stock-side-group is-${direction}`} aria-labelledby={`stock-${direction}-title`}>
+      <div className="stock-side-heading">
+        <h3 id={`stock-${direction}-title`}>{directionLabel} Top5</h3>
+        <small>{stocks.length} / 5</small>
       </div>
       {stocks.length ? (
-        <div className="stock-leader-list" aria-label={`${board?.name || "所选板块"}主力净流入前五个股`}>
+        <div className="stock-leader-list" aria-label={`${board?.name || "所选板块"}主力${directionLabel}前五个股`}>
           {stocks.map((stock, index) => {
             const selectedFlow = Number.isFinite(stock.selectedFlow) ? stock.selectedFlow : stock.snapshotMain;
             return (
@@ -471,11 +522,48 @@ function StockLeadersPanel({ board, payload, status, onRetry }) {
           })}
         </div>
       ) : (
-        <div className="stock-empty">
-          <p>{status.message}</p>
-          {board && status.state !== "loading" ? <button type="button" onClick={onRetry}>重新读取</button> : null}
-        </div>
+        <div className="stock-side-empty">{status?.message || `暂无${directionLabel}个股数据`}</div>
       )}
+    </section>
+  );
+}
+
+function StockLeadersPanel({ board, payload, status }) {
+  const latestMinute = [payload.inflow?.meta?.latestMinute, payload.outflow?.meta?.latestMinute]
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  const snapshotMinute = [payload.inflow?.meta?.snapshotMinute, payload.outflow?.meta?.snapshotMinute]
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  const isLoading = status.inflow?.state === "loading" || status.outflow?.state === "loading";
+  const commonState = latestMinute ? "live" : isLoading ? "loading" : "fallback";
+  const commonMessage = latestMinute
+    ? `数据至 ${latestMinute}`
+    : snapshotMinute
+      ? `快照 ${snapshotMinute}`
+      : isLoading
+        ? "正在读取两端个股排行…"
+        : "等待后台自动回补";
+
+  return (
+    <div className="stock-panel">
+      <p className="eyebrow">STOCK LEADERS</p>
+      <h2>Top5 个股</h2>
+      <div className="stock-panel-intro">
+        <p className="panel-copy">
+          {board ? `${board.name} · 主力净流入 / 净流出两端排行` : "请先选择一个板块"}
+        </p>
+        <div className={`stock-data-status status-${commonState}`} aria-live="polite">
+          <span className="status-dot" />
+          <span>{commonMessage}</span>
+        </div>
+      </div>
+      <div className="stock-sides">
+        <StockLeaderGroup board={board} payload={payload.inflow} status={status.inflow} direction="inflow" />
+        <StockLeaderGroup board={board} payload={payload.outflow} status={status.outflow} direction="outflow" />
+      </div>
     </div>
   );
 }
@@ -499,6 +587,7 @@ function DataMethodDialog({ open, onClose }) {
           <li>字段：<code>f51</code> 时间，<code>f52</code> 主力，<code>f53</code> 小单，<code>f54</code> 中单，<code>f55</code> 大单，<code>f56</code> 超大单；金额单位元。</li>
           <li>本地服务：后台每分钟采集，原始分钟数据写入 DuckDB；采集器会限制并发、重试备用域名并记录每次运行结果。</li>
           <li>前端通过 <code>interval=1m/5m</code> 切换分钟明细与 5 分钟视图，每 60 秒自动刷新；测试样本不会写入真实数据库。</li>
+          <li>个股排行：每 5 分钟分别抓取板块主力净流入与净流出两端各 5 只，回补完整日内分钟资金并去重落库。</li>
           <li>A股成交额：按交易日读取上交所主板A股与科创板、深交所主板A股与创业板的官方每日成交金额并求和，不包含B股、基金和债券。</li>
         </ol>
         <div className="formula-block">
@@ -521,13 +610,20 @@ export function App() {
   const [mode, setMode] = useState("demo");
   const [liveSeries, setLiveSeries] = useState([]);
   const [status, setStatus] = useState({ state: "loading", message: "正在连接本地 DuckDB 服务…" });
-  const [activeName, setActiveName] = useState("");
+  const [hoveredName, setHoveredName] = useState("");
+  const [pinnedName, setPinnedName] = useState("");
   const [methodOpen, setMethodOpen] = useState(false);
   const [turnoverPayload, setTurnoverPayload] = useState({ meta: {}, points: [] });
   const [turnoverStatus, setTurnoverStatus] = useState({ state: "loading", message: "正在读取官方成交额历史…" });
   const [selectedBoardCode, setSelectedBoardCode] = useState("");
-  const [stockLeadersPayload, setStockLeadersPayload] = useState({ meta: {}, stocks: [] });
-  const [stockLeadersStatus, setStockLeadersStatus] = useState({ state: "loading", message: "正在读取板块个股…" });
+  const [stockLeadersPayload, setStockLeadersPayload] = useState({
+    inflow: { meta: {}, stocks: [] },
+    outflow: { meta: {}, stocks: [] },
+  });
+  const [stockLeadersStatus, setStockLeadersStatus] = useState({
+    inflow: { state: "loading", message: "正在读取净流入个股…" },
+    outflow: { state: "loading", message: "正在读取净流出个股…" },
+  });
   const stockRequestRef = useRef(0);
   const demoSeries = useMemo(() => makeDemoSeries(boardType, interval), [boardType, interval]);
   const selectedTradeDate = tradeDate === "latest"
@@ -598,10 +694,14 @@ export function App() {
       if (payload.points?.length) {
         const estimate = payload.meta?.estimate;
         setTurnoverStatus({
-          state: "live",
+          state: payload.meta?.estimateError ? "fallback" : "live",
           message: payload.meta?.isLatestEstimate
-            ? `盘中预估至 ${estimate?.observedAt || "最新5分钟"} · 每60秒更新`
-            : `官方数据至 ${payload.meta.latestTradeDate} · 每60秒检查更新`,
+            ? estimate?.isStale
+              ? `缓存预估至 ${estimate?.observedAt || "最近5分钟"} · 上游重试中`
+              : `盘中预估至 ${estimate?.observedAt || "最新5分钟"} · 每60秒更新`
+            : payload.meta?.estimateError
+              ? `盘中预估源暂不可用 · 显示官方数据至 ${payload.meta.latestTradeDate}`
+              : `官方数据至 ${payload.meta.latestTradeDate} · 每60秒检查更新`,
         });
       } else {
         setTurnoverStatus({ state: "loading", message: "首次30日回补进行中" });
@@ -671,35 +771,61 @@ export function App() {
     const requestId = stockRequestRef.current + 1;
     stockRequestRef.current = requestId;
     if (!selectedBoardForStocks) {
-      setStockLeadersPayload({ meta: {}, stocks: [] });
-      setStockLeadersStatus({ state: "fallback", message: "暂无可查询的板块" });
+      setStockLeadersPayload({
+        inflow: { meta: {}, stocks: [] },
+        outflow: { meta: {}, stocks: [] },
+      });
+      setStockLeadersStatus({
+        inflow: { state: "fallback", message: "暂无可查询的板块" },
+        outflow: { state: "fallback", message: "暂无可查询的板块" },
+      });
       return;
     }
     if (!silent) {
-      setStockLeadersPayload({ meta: {}, stocks: [] });
-      setStockLeadersStatus({ state: "loading", message: `正在读取${selectedBoard?.name || "所选板块"}个股…` });
+      setStockLeadersPayload({
+        inflow: { meta: {}, stocks: [] },
+        outflow: { meta: {}, stocks: [] },
+      });
+      setStockLeadersStatus({
+        inflow: { state: "loading", message: `正在读取${selectedBoard?.name || "所选板块"}净流入个股…` },
+        outflow: { state: "loading", message: `正在读取${selectedBoard?.name || "所选板块"}净流出个股…` },
+      });
     }
-    try {
+    const fetchDirection = async (direction) => {
       const query = new URLSearchParams({
         boardType,
         boardCode: selectedBoardForStocks,
         tradeDate: selectedTradeDate,
         flowType: "main",
+        direction,
         limit: "5",
       });
       const response = await fetch(`/api/sector-stocks?${query}`);
       if (!response.ok) throw new Error(`个股 API ${response.status}`);
-      const payload = await response.json();
-      if (requestId !== stockRequestRef.current) return;
-      setStockLeadersPayload(payload);
-      setStockLeadersStatus(payload.stocks?.length
-        ? { state: "live", message: "真实个股资金数据" }
-        : { state: "fallback", message: "所选日期暂无个股快照，等待后台5分钟采集" });
-    } catch (error) {
-      if (requestId !== stockRequestRef.current) return;
-      setStockLeadersPayload({ meta: {}, stocks: [] });
-      setStockLeadersStatus({ state: "fallback", message: error.message || "个股数据暂不可用" });
-    }
+      return response.json();
+    };
+
+    const directions = ["inflow", "outflow"];
+    const results = await Promise.allSettled(directions.map(fetchDirection));
+    if (requestId !== stockRequestRef.current) return;
+
+    const nextPayload = {};
+    const nextStatus = {};
+    directions.forEach((direction, index) => {
+      const label = direction === "outflow" ? "净流出" : "净流入";
+      const result = results[index];
+      if (result.status === "fulfilled") {
+        nextPayload[direction] = result.value;
+        nextStatus[direction] = result.value.stocks?.length
+          ? { state: "live", message: `真实${label}个股数据` }
+          : { state: "fallback", message: `暂无${label}快照，等待后台5分钟采集` };
+      } else {
+        nextPayload[direction] = { meta: {}, stocks: [] };
+        nextStatus[direction] = { state: "fallback", message: result.reason?.message || `${label}数据暂不可用` };
+      }
+    });
+    setStockLeadersPayload(nextPayload);
+    setStockLeadersStatus(nextStatus);
   }, [boardType, selectedBoard?.name, selectedBoardForStocks, selectedTradeDate]);
 
   useEffect(() => {
@@ -709,7 +835,8 @@ export function App() {
   }, [loadStockLeaders]);
 
   const date = formatTradeDateLabel(selectedTradeDate);
-  const chartActiveName = activeName || selectedBoard?.name || "";
+  const chartPinnedName = ranked.some((item) => item.name === pinnedName) ? pinnedName : "";
+  const chartActiveName = hoveredName || chartPinnedName;
 
   return (
     <main className="dashboard-shell">
@@ -816,7 +943,7 @@ export function App() {
             <p className="eyebrow">INTRADAY FLOW</p>
             <h1>{FLOW_TYPES[flowType].label}资金流入曲线</h1>
           </div>
-          <p>点击或悬停曲线可聚焦板块</p>
+          <p>悬停临时聚焦，点击曲线锁定或取消</p>
         </div>
         <FlowChart
           series={ranked}
@@ -824,7 +951,9 @@ export function App() {
           interval={interval}
           period={period}
           activeName={chartActiveName}
-          onActiveName={setActiveName}
+          pinnedName={chartPinnedName}
+          onHoverName={setHoveredName}
+          onPinnedName={setPinnedName}
         />
       </section>
 
@@ -840,7 +969,7 @@ export function App() {
         <div className="ranking-panel">
           <p className="eyebrow">LATEST RANKING</p>
           <h2>最新板块排行</h2>
-          <p className="panel-copy">点击板块查看右侧主力净流入 Top5 个股。</p>
+          <p className="panel-copy">点击板块，在右侧同时查看主力净流入与净流出 Top5 个股。</p>
           <div className="ranking-list">
             {latestRanking.map((item, index) => (
               <button
@@ -848,11 +977,11 @@ export function App() {
                 type="button"
                 className={item.code === selectedBoardForStocks ? "is-selected" : ""}
                 aria-pressed={item.code === selectedBoardForStocks}
-                onMouseEnter={() => setActiveName(item.name)}
-                onMouseLeave={() => setActiveName("")}
+                onMouseEnter={() => setHoveredName(item.name)}
+                onMouseLeave={() => setHoveredName("")}
                 onClick={() => {
                   setSelectedBoardCode(item.code);
-                  setActiveName("");
+                  setHoveredName("");
                 }}
               >
                 <span className="rank-index">{String(index + 1).padStart(2, "0")}</span>
@@ -866,7 +995,6 @@ export function App() {
           board={selectedBoard}
           payload={stockLeadersPayload}
           status={stockLeadersStatus}
-          onRetry={() => void loadStockLeaders()}
         />
       </section>
 

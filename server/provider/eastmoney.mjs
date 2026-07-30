@@ -151,11 +151,11 @@ export async function fetchBoardMinuteFlow(board) {
   throw new Error(`${board.name}没有分钟资金数据 (${errors.join("; ")})`);
 }
 
-export async function fetchSectorConstituents(board, limit = 5) {
+async function fetchSectorConstituentSide(board, limit, direction) {
   const { payload, endpoint } = await fetchWithFallback(LIST_ENDPOINTS, {
     pn: 1,
     pz: limit,
-    po: 1,
+    po: direction === "outflow" ? 0 : 1,
     np: 1,
     fltt: 2,
     invt: 2,
@@ -165,7 +165,7 @@ export async function fetchSectorConstituents(board, limit = 5) {
     ut: "bd1d9ddb04089700cf9c27f6f7426281",
   });
   const rows = rowsFromDiff(payload?.data?.diff);
-  if (!rows.length) throw new Error(`${board.name}没有成分股数据`);
+  if (!rows.length) throw new Error(`${board.name}没有${direction === "outflow" ? "净流出" : "净流入"}成分股数据`);
   return {
     sourceHost: new URL(endpoint).host,
     items: rows
@@ -178,12 +178,27 @@ export async function fetchSectorConstituents(board, limit = 5) {
         market: String(row.f13),
         code: row.f12,
         name: row.f14,
-        rank: index + 1,
+        rank: direction === "outflow" ? 1001 + index : index + 1,
         snapshotPrice: finiteNumber(row.f2) || 0,
         snapshotChangePct: finiteNumber(row.f3) || 0,
         snapshotMainFlowYuan: finiteNumber(row.f62) || 0,
         snapshotMainFlowRatio: finiteNumber(row.f184) || 0,
       })),
+  };
+}
+
+export async function fetchSectorConstituents(board, limit = 5) {
+  const [inflow, outflow] = await Promise.all([
+    fetchSectorConstituentSide(board, limit, "inflow"),
+    fetchSectorConstituentSide(board, limit, "outflow"),
+  ]);
+  const items = [...new Map([...inflow.items, ...outflow.items].map((item) => [
+    `${item.market}:${item.code}`,
+    item,
+  ])).values()].sort((left, right) => left.rank - right.rank);
+  return {
+    sourceHost: [...new Set([inflow.sourceHost, outflow.sourceHost])].join(","),
+    items,
   };
 }
 

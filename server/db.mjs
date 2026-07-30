@@ -650,9 +650,16 @@ export class MoneyflowDatabase {
     boardCode,
     tradeDate = "latest",
     flowType = "main",
+    direction = "inflow",
     limit = 5,
   }) {
     const field = FLOW_FIELDS[flowType] || FLOW_FIELDS.main;
+    const safeDirection = direction === "outflow" ? "outflow" : "inflow";
+    const snapshotFallback = field === FLOW_FIELDS.main
+      ? "snapshot.snapshot_main_flow_yuan / 100000000.0"
+      : "NULL";
+    const directionFilter = safeDirection === "outflow" ? "< 0" : "> 0";
+    const directionOrder = safeDirection === "outflow" ? "ASC" : "DESC";
     const safeLimit = Math.min(20, Math.max(1, Number(limit) || 5));
     return this.enqueue(async () => {
       let selectedDate = tradeDate;
@@ -666,7 +673,7 @@ export class MoneyflowDatabase {
       }
       if (!selectedDate) {
         return {
-          meta: { boardType, boardCode, tradeDate: null, snapshotMinute: null, latestMinute: null },
+          meta: { boardType, boardCode, tradeDate: null, snapshotMinute: null, latestMinute: null, direction: safeDirection },
           stocks: [],
         };
       }
@@ -681,7 +688,7 @@ export class MoneyflowDatabase {
       const snapshotMinute = snapshotReader.getRowObjectsJson()[0]?.snapshotMinute || null;
       if (!snapshotMinute) {
         return {
-          meta: { boardType, boardCode, tradeDate: selectedDate, snapshotMinute: null, latestMinute: null },
+          meta: { boardType, boardCode, tradeDate: selectedDate, snapshotMinute: null, latestMinute: null, direction: safeDirection },
           stocks: [],
         };
       }
@@ -709,7 +716,7 @@ export class MoneyflowDatabase {
           FROM stock_minute_flow
           WHERE trade_date = $tradeDate
           GROUP BY market, code
-        )
+        ), joined AS (
         SELECT
           snapshot.board_name AS boardName,
           snapshot.rank_by_main_flow AS rank,
@@ -720,7 +727,7 @@ export class MoneyflowDatabase {
           snapshot.snapshot_change_pct AS changePct,
           snapshot.snapshot_main_flow_yuan / 100000000.0 AS snapshotMain,
           snapshot.snapshot_main_flow_ratio AS snapshotMainRatio,
-          latest_flow.selected_flow AS selectedFlow,
+          coalesce(latest_flow.selected_flow, ${snapshotFallback}) AS selectedFlow,
           latest_flow.main,
           latest_flow.small,
           latest_flow.medium,
@@ -731,7 +738,10 @@ export class MoneyflowDatabase {
         LEFT JOIN latest_flow
           ON latest_flow.market = snapshot.stock_market
           AND latest_flow.code = snapshot.stock_code
-        ORDER BY latest_flow.selected_flow DESC NULLS LAST, snapshot.rank_by_main_flow, snapshot.stock_code
+        )
+        SELECT * FROM joined
+        WHERE selectedFlow ${directionFilter}
+        ORDER BY selectedFlow ${directionOrder} NULLS LAST, rank, code
         LIMIT $limit
       `, {
         tradeDate: selectedDate,
@@ -754,6 +764,7 @@ export class MoneyflowDatabase {
           snapshotMinute,
           latestMinute: latestMinute || null,
           flowType: FLOW_FIELDS[flowType] ? flowType : "main",
+          direction: safeDirection,
         },
         stocks,
       };

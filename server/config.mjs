@@ -58,6 +58,10 @@ export const marketTurnoverFetchConcurrency = Math.min(
   8,
   Math.max(1, Number(process.env.MARKET_TURNOVER_FETCH_CONCURRENCY || 4)),
 );
+export const marketTurnoverEstimateMaxStaleMs = Math.max(
+  60_000,
+  Number(process.env.MARKET_TURNOVER_ESTIMATE_MAX_STALE_MS || 300_000),
+);
 
 export function shanghaiClock(date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {

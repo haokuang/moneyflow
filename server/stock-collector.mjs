@@ -78,7 +78,7 @@ export class StockHistoryCollector {
             const cached = await this.database.getCachedConstituents(
               board.boardType,
               board.code,
-              stocksPerBoard,
+              stocksPerBoard * 2,
             );
             if (!cached.length) throw error;
             return {

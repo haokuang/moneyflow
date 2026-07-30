@@ -7,12 +7,50 @@ import { MoneyflowDatabase } from "../server/db.mjs";
 import { parseMinuteKlines } from "../server/provider/eastmoney.mjs";
 import {
   combineAshareIndexTurnover,
+  combineAshareIndexVolume,
   parseIndexTurnoverKlines,
   parseSseTurnover,
   parseSzseTurnover,
+  parseTencentIndexQuotes,
+  parseTencentIndexVolumeKlines,
   parseTradingDates,
 } from "../server/provider/market-turnover.mjs";
-import { estimateIntradayMarketTurnover } from "../server/market-turnover-estimator.mjs";
+import { MarketTurnoverEstimator, estimateIntradayMarketTurnover } from "../server/market-turnover-estimator.mjs";
+
+function makeTurnoverEstimateFixture() {
+  const rows = [];
+  for (let day = 20; day <= 25; day += 1) {
+    const tradeDate = `2026-07-${day}`;
+    rows.push({
+      tradeDate,
+      minute: "10:00",
+      shanghaiTurnoverYuan: 2000 * 100_000_000,
+      shenzhenTurnoverYuan: 2250 * 100_000_000,
+      totalTurnoverYuan: 4250 * 100_000_000,
+    });
+    rows.push({
+      tradeDate,
+      minute: "15:00",
+      shanghaiTurnoverYuan: 6000 * 100_000_000,
+      shenzhenTurnoverYuan: 6750 * 100_000_000,
+      totalTurnoverYuan: 12750 * 100_000_000,
+    });
+  }
+  rows.push({
+    tradeDate: "2026-07-29",
+    minute: "10:00",
+    shanghaiTurnoverYuan: 3000 * 100_000_000,
+    shenzhenTurnoverYuan: 4000 * 100_000_000,
+    totalTurnoverYuan: 7000 * 100_000_000,
+  });
+  const officialPoints = Array.from({ length: 6 }, (_, index) => ({
+    tradeDate: `2026-07-${20 + index}`,
+    shanghai: 8000,
+    shenzhen: 9000,
+    total: 17000,
+  }));
+  return { rows, officialPoints };
+}
 
 test("parses Eastmoney one-minute cumulative fields without changing units", () => {
   const rows = parseMinuteKlines({ data: { klines: ["2026-07-22 09:31,100000000,-20000000,30000000,40000000,60000000"] } }, {
@@ -76,38 +114,41 @@ test("parses and combines Shanghai and Shenzhen A-share index turnover bars", ()
   }]);
 });
 
-test("estimates current full-day turnover from robust historical completion and recent official level", () => {
-  const rows = [];
-  for (let day = 20; day <= 25; day += 1) {
-    const tradeDate = `2026-07-${day}`;
-    rows.push({
-      tradeDate,
-      minute: "10:00",
-      shanghaiTurnoverYuan: 2000 * 100_000_000,
-      shenzhenTurnoverYuan: 2250 * 100_000_000,
-      totalTurnoverYuan: 4250 * 100_000_000,
-    });
-    rows.push({
-      tradeDate,
-      minute: "15:00",
-      shanghaiTurnoverYuan: 6000 * 100_000_000,
-      shenzhenTurnoverYuan: 6750 * 100_000_000,
-      totalTurnoverYuan: 12750 * 100_000_000,
-    });
-  }
-  rows.push({
+test("parses Tencent index volume profiles and exact live cumulative turnover", () => {
+  const shanghai = parseTencentIndexVolumeKlines({
+    data: { sh000002: { m5: [["202607291500", "1", "1", "1", "1", "500000000", {}, "1"]] } },
+  }, "shanghai");
+  const shenzhen = parseTencentIndexVolumeKlines({
+    data: { sz399107: { m5: [["202607291500", "1", "1", "1", "1", "600000000", {}, "1"]] } },
+  }, "shenzhen");
+  assert.deepEqual(combineAshareIndexVolume(shanghai, shenzhen), [{
+    timestamp: "2026-07-29 15:00",
     tradeDate: "2026-07-29",
-    minute: "10:00",
-    shanghaiTurnoverYuan: 3000 * 100_000_000,
-    shenzhenTurnoverYuan: 4000 * 100_000_000,
-    totalTurnoverYuan: 7000 * 100_000_000,
-  });
-  const officialPoints = Array.from({ length: 6 }, (_, index) => ({
-    tradeDate: `2026-07-${20 + index}`,
-    shanghai: 8000,
-    shenzhen: 9000,
-    total: 17000,
-  }));
+    minute: "15:00",
+    shanghaiProfileValue: 500000000,
+    shenzhenProfileValue: 600000000,
+    totalProfileValue: 1100000000,
+    estimateProfile: "volume-proxy",
+  }]);
+
+  const quoteLine = (code, timestamp, amount) => {
+    const fields = Array(36).fill("");
+    fields[30] = timestamp;
+    fields[35] = `1/2/${amount}`;
+    return `v_${code}="${fields.join("~")}"`;
+  };
+  const quotes = parseTencentIndexQuotes([
+    quoteLine("sh000002", "20260730135348", "876524077535"),
+    quoteLine("sz399107", "20260730135348", "996342343585"),
+  ].join(";\n"));
+  assert.equal(quotes.shanghai.tradeDate, "2026-07-30");
+  assert.equal(quotes.shanghai.minute, "13:53");
+  assert.equal(quotes.shanghai.turnoverYuan, 876524077535);
+  assert.equal(quotes.shenzhen.turnoverYuan, 996342343585);
+});
+
+test("estimates current full-day turnover from robust historical completion and recent official level", () => {
+  const { rows, officialPoints } = makeTurnoverEstimateFixture();
   const estimate = estimateIntradayMarketTurnover(rows, officialPoints);
   assert.equal(estimate.tradeDate, "2026-07-29");
   assert.equal(estimate.observedAt, "10:00");
@@ -123,6 +164,63 @@ test("estimates current full-day turnover from robust historical completion and 
     shenzhen: 12000,
     total: 23000,
   }]), null);
+});
+
+test("marks volume-profile fallback estimates explicitly", () => {
+  const { rows, officialPoints } = makeTurnoverEstimateFixture();
+  const proxyRows = rows.map((row) => ({
+    ...row,
+    shanghaiProfileValue: row.shanghaiTurnoverYuan / 100,
+    shenzhenProfileValue: row.shenzhenTurnoverYuan / 100,
+    totalProfileValue: row.totalTurnoverYuan / 100,
+  }));
+  const current = proxyRows.at(-1);
+  current.estimateProfile = "volume-proxy";
+  current.estimateSourceNote = "fixture volume proxy";
+  const estimate = estimateIntradayMarketTurnover(proxyRows, officialPoints);
+  assert.equal(estimate.profileBasis, "volume-proxy");
+  assert.match(estimate.method, /成交量占比中位数/);
+  assert.equal(estimate.sourceNote, "fixture volume proxy");
+  assert.equal(estimate.total, 21400);
+});
+
+test("keeps a clearly marked short-lived turnover estimate when refresh fails", async () => {
+  const { rows, officialPoints } = makeTurnoverEstimateFixture();
+  let clock = 1_000_000;
+  let fetchCount = 0;
+  const estimator = new MarketTurnoverEstimator({
+    refreshMs: 60_000,
+    maxStaleMs: 300_000,
+    now: () => clock,
+    fetchRows: async () => {
+      fetchCount += 1;
+      if (fetchCount === 1) return rows;
+      throw new Error("temporary upstream socket close");
+    },
+  });
+  const payload = {
+    meta: { count: officialPoints.length, latestTradeDate: officialPoints.at(-1).tradeDate },
+    points: officialPoints,
+  };
+
+  const fresh = await estimator.enhanceHistory(payload, 30);
+  assert.equal(fresh.meta.isLatestEstimate, true);
+  assert.equal(fresh.meta.estimate.isStale, false);
+  assert.equal(fresh.points.at(-1).isStaleEstimate, false);
+
+  clock += 61_000;
+  const stale = await estimator.enhanceHistory(payload, 30);
+  assert.equal(stale.meta.isLatestEstimate, true);
+  assert.equal(stale.meta.estimate.isStale, true);
+  assert.equal(stale.meta.estimate.sourceAgeSeconds, 61);
+  assert.match(stale.meta.estimate.sourceError, /socket close/);
+  assert.equal(stale.points.at(-1).isStaleEstimate, true);
+
+  clock += 300_000;
+  const expired = await estimator.enhanceHistory(payload, 30);
+  assert.equal(expired.meta.isLatestEstimate, undefined);
+  assert.match(expired.meta.estimateError, /socket close/);
+  assert.equal(expired.points.at(-1).tradeDate, "2026-07-25");
 });
 
 test("persists one-minute rows and aggregates each five-minute bucket with last, not sum", async () => {
@@ -240,6 +338,38 @@ test("persists one-minute rows and aggregates each five-minute bucket with last,
         snapshotMainFlowRatio: 8.2,
         sourceHost: "fixture",
       },
+      {
+        tradeDate: "2026-07-22",
+        snapshotMinute: "15:00",
+        boardType: "industry",
+        boardCode: "BK1",
+        boardName: "板块一",
+        market: "1",
+        code: "600003",
+        name: "股票三",
+        rank: 1001,
+        snapshotPrice: 6.3,
+        snapshotChangePct: -3.1,
+        snapshotMainFlowYuan: -400000000,
+        snapshotMainFlowRatio: -6.2,
+        sourceHost: "fixture",
+      },
+      {
+        tradeDate: "2026-07-22",
+        snapshotMinute: "15:00",
+        boardType: "industry",
+        boardCode: "BK1",
+        boardName: "板块一",
+        market: "0",
+        code: "000004",
+        name: "股票四",
+        rank: 1002,
+        snapshotPrice: 10.2,
+        snapshotChangePct: -1.5,
+        snapshotMainFlowYuan: -200000000,
+        snapshotMainFlowRatio: -3.8,
+        sourceHost: "fixture",
+      },
     ]);
     const stockMk = (market, code, name, minute, main) => ({
       tradeDate: "2026-07-22",
@@ -258,9 +388,11 @@ test("persists one-minute rows and aggregates each five-minute bucket with last,
       stockMk("1", "600001", "股票一", "09:30", 100000000),
       stockMk("1", "600001", "股票一", "15:00", 500000000),
       stockMk("0", "000002", "股票二", "15:00", 300000000),
+      stockMk("1", "600003", "股票三", "15:00", -400000000),
+      stockMk("0", "000004", "股票四", "15:00", -200000000),
     ]);
     const cachedConstituents = await database.getCachedConstituents("industry", "BK1", 5);
-    assert.deepEqual(cachedConstituents.map((item) => item.code), ["600001", "000002"]);
+    assert.deepEqual(cachedConstituents.map((item) => item.code), ["600001", "000002", "600003", "000004"]);
 
     const leaders = await database.getSectorStockLeaders({
       boardType: "industry",
@@ -274,6 +406,21 @@ test("persists one-minute rows and aggregates each five-minute bucket with last,
     assert.deepEqual(leaders.stocks.map((item) => [item.code, item.selectedFlow]), [
       ["600001", 5],
       ["000002", 3],
+    ]);
+    assert.equal(leaders.meta.direction, "inflow");
+
+    const outflows = await database.getSectorStockLeaders({
+      boardType: "industry",
+      boardCode: "BK1",
+      tradeDate: "2026-07-22",
+      flowType: "main",
+      direction: "outflow",
+      limit: 5,
+    });
+    assert.equal(outflows.meta.direction, "outflow");
+    assert.deepEqual(outflows.stocks.map((item) => [item.code, item.selectedFlow]), [
+      ["600003", -4],
+      ["000004", -2],
     ]);
 
     await database.upsertMarketTurnoverRows([
@@ -312,9 +459,9 @@ test("persists one-minute rows and aggregates each five-minute bucket with last,
     const status = await database.getStatus();
     assert.equal(status.sectorCount, 2);
     assert.equal(status.minuteRowCount, 8);
-    assert.equal(status.constituentSnapshotCount, 3);
-    assert.equal(status.stockMinuteRowCount, 3);
-    assert.equal(status.stockCount, 2);
+    assert.equal(status.constituentSnapshotCount, 5);
+    assert.equal(status.stockMinuteRowCount, 5);
+    assert.equal(status.stockCount, 4);
     assert.equal(status.latestStockTradeDate, "2026-07-22");
     assert.equal(status.latestStockMinute, "15:00");
     assert.equal(status.marketTurnoverDayCount, 2);

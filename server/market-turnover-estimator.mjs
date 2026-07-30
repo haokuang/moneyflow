@@ -18,6 +18,11 @@ function sum(rows, key) {
   return rows.reduce((total, row) => total + (Number(row[key]) || 0), 0);
 }
 
+function sumProfile(rows, profileKey, fallbackKey) {
+  const hasProfile = rows.some((row) => Number.isFinite(Number(row[profileKey])));
+  return sum(rows, hasProfile ? profileKey : fallbackKey);
+}
+
 function groupByTradeDate(rows) {
   const groups = new Map();
   rows.forEach((row) => {
@@ -33,14 +38,15 @@ function estimateComponent({
   historicalRows,
   observedAt,
   minuteKey,
+  profileKey,
   officialPoints,
   officialKey,
 }) {
   const observed = sum(currentRows, minuteKey);
   const ratios = historicalRows.flatMap((rows) => {
-    const fullDay = sum(rows, minuteKey);
+    const fullDay = sumProfile(rows, profileKey, minuteKey);
     if (fullDay <= 0) return [];
-    const sameTime = sum(rows.filter((row) => row.minute <= observedAt), minuteKey);
+    const sameTime = sumProfile(rows.filter((row) => row.minute <= observedAt), profileKey, minuteKey);
     const ratio = sameTime / fullDay;
     return ratio > 0 && ratio <= 1.02 ? [Math.min(1, ratio)] : [];
   });
@@ -87,12 +93,16 @@ export function estimateIntradayMarketTurnover(rows, officialPoints, { profileDa
     .slice(-profileDays);
   if (historicalDates.length < 5) return null;
   const historicalRows = historicalDates.map((date) => grouped.get(date));
+  const profileBasis = currentRows[currentRows.length - 1]?.estimateProfile === "volume-proxy"
+    ? "volume-proxy"
+    : "turnover";
 
   const shanghai = estimateComponent({
     currentRows,
     historicalRows,
     observedAt,
     minuteKey: "shanghaiTurnoverYuan",
+    profileKey: "shanghaiProfileValue",
     officialPoints,
     officialKey: "shanghai",
   });
@@ -101,6 +111,7 @@ export function estimateIntradayMarketTurnover(rows, officialPoints, { profileDa
     historicalRows,
     observedAt,
     minuteKey: "shenzhenTurnoverYuan",
+    profileKey: "shenzhenProfileValue",
     officialPoints,
     officialKey: "shenzhen",
   });
@@ -109,6 +120,7 @@ export function estimateIntradayMarketTurnover(rows, officialPoints, { profileDa
     historicalRows,
     observedAt,
     minuteKey: "totalTurnoverYuan",
+    profileKey: "totalProfileValue",
     officialPoints,
     officialKey: "total",
   });
@@ -128,29 +140,47 @@ export function estimateIntradayMarketTurnover(rows, officialPoints, { profileDa
     observedTotal: Math.round((observedTotalYuan / YI) * 100) / 100,
     completionRatio: Math.round(total.completionRatio * 10_000) / 10_000,
     historyDays: historicalDates.length,
-    method: METHOD,
+    method: profileBasis === "volume-proxy"
+      ? `近${historicalDates.length}日A股指数历史同期成交量占比中位数（成交额完成度代理）+ 近期正式日成交额收缩`
+      : METHOD,
+    profileBasis,
     estimatedAt: new Date().toISOString(),
-    sourceNote: "东方财富上证A股指数与深证A指5分钟成交额；收盘后以沪深交易所正式日值替换",
+    sourceNote: currentRows[currentRows.length - 1]?.estimateSourceNote
+      || "东方财富上证A股指数与深证A指5分钟成交额；收盘后以沪深交易所正式日值替换",
   };
 }
 
 export class MarketTurnoverEstimator {
-  constructor({ refreshMs = 60_000, profileDays = 20 } = {}) {
+  constructor({
+    refreshMs = 60_000,
+    profileDays = 20,
+    maxStaleMs = 300_000,
+    fetchRows = fetchAshareIndexTurnoverKlines,
+    now = () => Date.now(),
+  } = {}) {
     this.refreshMs = refreshMs;
     this.profileDays = profileDays;
+    this.maxStaleMs = maxStaleMs;
+    this.fetchRows = fetchRows;
+    this.now = now;
     this.cachedRows = null;
     this.cachedAt = 0;
     this.pending = null;
     this.lastError = null;
+    this.lastServedStale = false;
   }
 
   async getRows() {
-    if (this.cachedRows && Date.now() - this.cachedAt < this.refreshMs) return this.cachedRows;
+    const cacheAgeMs = this.cachedRows ? this.now() - this.cachedAt : null;
+    if (this.cachedRows && cacheAgeMs < this.refreshMs) {
+      this.lastServedStale = false;
+      return { rows: this.cachedRows, stale: false, cachedAt: this.cachedAt, cacheAgeMs };
+    }
     if (!this.pending) {
-      this.pending = fetchAshareIndexTurnoverKlines()
+      this.pending = this.fetchRows()
         .then((rows) => {
           this.cachedRows = rows;
-          this.cachedAt = Date.now();
+          this.cachedAt = this.now();
           this.lastError = null;
           return rows;
         })
@@ -162,15 +192,43 @@ export class MarketTurnoverEstimator {
           this.pending = null;
         });
     }
-    return this.pending;
+    try {
+      const rows = await this.pending;
+      this.lastServedStale = false;
+      return { rows, stale: false, cachedAt: this.cachedAt, cacheAgeMs: 0 };
+    } catch (error) {
+      const failedCacheAgeMs = this.cachedRows ? this.now() - this.cachedAt : null;
+      if (this.cachedRows && failedCacheAgeMs <= this.maxStaleMs) {
+        this.lastServedStale = true;
+        return {
+          rows: this.cachedRows,
+          stale: true,
+          cachedAt: this.cachedAt,
+          cacheAgeMs: failedCacheAgeMs,
+          error: error.message,
+        };
+      }
+      this.lastServedStale = false;
+      throw error;
+    }
   }
 
   async enhanceHistory(payload, limit = 30) {
     try {
-      const rows = await this.getRows();
+      const source = await this.getRows();
+      const rows = source.rows;
       const estimate = estimateIntradayMarketTurnover(rows, payload.points, { profileDays: this.profileDays });
       if (!estimate) return payload;
-      const points = [...payload.points.filter((point) => point.tradeDate !== estimate.tradeDate), estimate]
+      const sourceCachedAt = new Date(source.cachedAt).toISOString();
+      const sourceAgeSeconds = Math.max(0, Math.round(source.cacheAgeMs / 1000));
+      const enrichedEstimate = {
+        ...estimate,
+        isStaleEstimate: source.stale,
+        sourceCachedAt,
+        sourceAgeSeconds,
+        sourceError: source.error || null,
+      };
+      const points = [...payload.points.filter((point) => point.tradeDate !== estimate.tradeDate), enrichedEstimate]
         .sort((left, right) => left.tradeDate.localeCompare(right.tradeDate))
         .slice(-limit);
       return {
@@ -185,7 +243,13 @@ export class MarketTurnoverEstimator {
             completionRatio: estimate.completionRatio,
             historyDays: estimate.historyDays,
             method: estimate.method,
+            profileBasis: estimate.profileBasis,
+            sourceNote: estimate.sourceNote,
             estimatedAt: estimate.estimatedAt,
+            isStale: source.stale,
+            sourceCachedAt,
+            sourceAgeSeconds,
+            sourceError: source.error || null,
           },
         },
         points,
@@ -202,7 +266,10 @@ export class MarketTurnoverEstimator {
     return {
       refreshMs: this.refreshMs,
       profileDays: this.profileDays,
+      maxStaleMs: this.maxStaleMs,
       cachedAt: this.cachedAt ? new Date(this.cachedAt).toISOString() : null,
+      cacheAgeMs: this.cachedAt ? Math.max(0, this.now() - this.cachedAt) : null,
+      lastServedStale: this.lastServedStale,
       lastError: this.lastError,
     };
   }

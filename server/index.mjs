@@ -91,12 +91,14 @@ const server = http.createServer(async (request, response) => {
       }
       const tradeDate = url.searchParams.get("tradeDate") || "latest";
       const flowType = url.searchParams.get("flowType") || "main";
+      const direction = url.searchParams.get("direction") === "outflow" ? "outflow" : "inflow";
       const limit = Number(url.searchParams.get("limit") || 5);
       return sendJson(response, 200, await database.getSectorStockLeaders({
         boardType,
         boardCode,
         tradeDate,
         flowType,
+        direction,
         limit,
       }));
     }
