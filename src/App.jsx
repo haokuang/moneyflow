@@ -91,6 +91,12 @@ const INTERVAL_LABELS = {
   "5m": "5 分钟",
 };
 
+const MOBILE_TRADING_TIME_TICKS = {
+  "full-day": ["09:30", "10:30", "11:30", "14:00", "15:00"],
+  morning: ["09:30", "10:30", "11:30"],
+  afternoon: ["13:00", "14:00", "15:00"],
+};
+
 function createTradingTimes(interval) {
   const stepMinutes = interval === "1m" ? 1 : 5;
   const times = [];
@@ -190,7 +196,7 @@ function clockMinutes(time) {
   return Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : MORNING_START;
 }
 
-function tradingTimeX(time, period, left, width) {
+function tradingTimeX(time, period, left, width, lunchGapWidth = LUNCH_GAP_WIDTH) {
   const minute = clockMinutes(time);
   if (period === "morning") {
     const progress = Math.min(1, Math.max(0, (minute - MORNING_START) / (MORNING_END - MORNING_START)));
@@ -201,13 +207,29 @@ function tradingTimeX(time, period, left, width) {
     return left + progress * width;
   }
 
-  const sessionWidth = (width - LUNCH_GAP_WIDTH) / 2;
+  const sessionWidth = (width - lunchGapWidth) / 2;
   if (minute <= MORNING_END) {
     const progress = Math.min(1, Math.max(0, (minute - MORNING_START) / (MORNING_END - MORNING_START)));
     return left + progress * sessionWidth;
   }
   const progress = Math.min(1, Math.max(0, (minute - AFTERNOON_START) / (AFTERNOON_END - AFTERNOON_START)));
-  return left + sessionWidth + LUNCH_GAP_WIDTH + progress * sessionWidth;
+  return left + sessionWidth + lunchGapWidth + progress * sessionWidth;
+}
+
+function useMediaQuery(query) {
+  const [matches, setMatches] = useState(() => (
+    typeof window !== "undefined" && window.matchMedia(query).matches
+  ));
+
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [query]);
+
+  return matches;
 }
 
 function distributeLabels(items, minY, maxY, gap) {
@@ -237,9 +259,12 @@ function FlowChart({
   onHoverName,
   onPinnedName,
 }) {
-  const width = 1180;
-  const height = 600;
-  const margin = { top: 26, right: 326, bottom: 54, left: 66 };
+  const mobile = useMediaQuery("(max-width: 560px)");
+  const width = mobile ? 360 : 1180;
+  const height = mobile ? 340 : 600;
+  const margin = mobile
+    ? { top: 18, right: 10, bottom: 42, left: 48 }
+    : { top: 26, right: 326, bottom: 54, left: 66 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const visible = series
@@ -247,7 +272,7 @@ function FlowChart({
     .filter((item) => item.points.length);
   const values = visible.flatMap((item) => item.points.map((point) => point[flowType]));
   const bound = Math.max(4, ...values.map((value) => Math.abs(value))) * 1.12;
-  const x = (time) => tradingTimeX(time, period, margin.left, plotWidth);
+  const x = (time) => tradingTimeX(time, period, margin.left, plotWidth, mobile ? 18 : LUNCH_GAP_WIDTH);
   const y = (value) => margin.top + ((bound - value) / (bound * 2)) * plotHeight;
   const latest = visible.map((item) => {
     const value = item.points[item.points.length - 1][flowType];
@@ -256,13 +281,15 @@ function FlowChart({
   const labels = distributeLabels(latest, margin.top + 6, margin.top + plotHeight - 6, 18);
   const labelMap = new Map(labels.map((item) => [item.name, item]));
   const tickValues = [-bound, -bound / 2, 0, bound / 2, bound];
-  const timeTicks = TRADING_TIME_TICKS[period] || TRADING_TIME_TICKS["full-day"];
+  const timeTicks = mobile
+    ? MOBILE_TRADING_TIME_TICKS[period] || MOBILE_TRADING_TIME_TICKS["full-day"]
+    : TRADING_TIME_TICKS[period] || TRADING_TIME_TICKS["full-day"];
 
   return (
-    <div className="chart-scroll" aria-label="板块资金流向曲线，可横向滚动">
+    <div className={`chart-scroll${mobile ? " is-mobile" : ""}`} aria-label={mobile ? "板块资金流向曲线，完整展示交易时段" : "板块资金流向曲线，可横向滚动"}>
       <svg className="flow-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="chart-title chart-desc">
         <title id="chart-title">板块{FLOW_TYPES[flowType].label}{INTERVAL_LABELS[interval]}净流入累计曲线</title>
-        <desc id="chart-desc">红色表示净流入，绿色表示净流出，单位亿元；横轴固定展示完整交易时段，午休区间压缩。</desc>
+        <desc id="chart-desc">红色表示净流入，绿色表示净流出，单位亿元；横轴固定展示完整交易时段，午休区间压缩。手机端末值在图下列表展示。</desc>
         <rect x="0" y="0" width={width} height={height} fill="#fff" />
         {tickValues.map((tick) => (
           <g key={tick}>
@@ -272,10 +299,15 @@ function FlowChart({
             </text>
           </g>
         ))}
-        {timeTicks.map((tick) => (
+        {timeTicks.map((tick, index) => (
           <g key={tick}>
             <line x1={x(tick)} x2={x(tick)} y1={margin.top} y2={margin.top + plotHeight} className="vertical-grid" />
-            <text x={x(tick)} y={height - 22} textAnchor="middle" className="axis-text">
+            <text
+              x={x(tick)}
+              y={height - 22}
+              textAnchor={mobile && index === timeTicks.length - 1 ? "end" : "middle"}
+              className="axis-text"
+            >
               {tick}
             </text>
           </g>
@@ -296,30 +328,55 @@ function FlowChart({
               key={item.code}
               className="series-group"
               opacity={isActive ? 1 : 0.12}
-              onMouseEnter={() => onHoverName(item.name)}
-              onMouseLeave={() => onHoverName("")}
+              onMouseEnter={mobile ? undefined : () => onHoverName(item.name)}
+              onMouseLeave={mobile ? undefined : () => onHoverName("")}
               onClick={() => onPinnedName(pinnedName === item.name ? "" : item.name)}
             >
               <path d={path} fill="none" stroke={color} strokeWidth={activeName === item.name ? 3.2 : 1.7} strokeLinecap="round" strokeLinejoin="round" />
               <circle cx={finalX} cy={y(finalValue)} r={activeName === item.name ? 3.2 : 2.2} fill={color} />
-              <line
-                x1={finalX}
-                y1={y(finalValue)}
-                x2={margin.left + plotWidth + 54}
-                y2={label?.labelY || y(finalValue)}
-                stroke={color}
-                strokeWidth="1"
-                strokeDasharray={finalX < margin.left + plotWidth - 1 ? "3 4" : undefined}
-                opacity="0.38"
-              />
-              <circle cx={margin.left + plotWidth + 54} cy={label?.labelY || y(finalValue)} r="2.8" fill={color} />
-              <text x={margin.left + plotWidth + 67} y={(label?.labelY || y(finalValue)) + 4.5} fill={color} className="end-label">
-                {item.name} <tspan fontWeight="700">{formatYi(finalValue, true)}</tspan>
-              </text>
+              {!mobile ? (
+                <>
+                  <line
+                    x1={finalX}
+                    y1={y(finalValue)}
+                    x2={margin.left + plotWidth + 54}
+                    y2={label?.labelY || y(finalValue)}
+                    stroke={color}
+                    strokeWidth="1"
+                    strokeDasharray={finalX < margin.left + plotWidth - 1 ? "3 4" : undefined}
+                    opacity="0.38"
+                  />
+                  <circle cx={margin.left + plotWidth + 54} cy={label?.labelY || y(finalValue)} r="2.8" fill={color} />
+                  <text x={margin.left + plotWidth + 67} y={(label?.labelY || y(finalValue)) + 4.5} fill={color} className="end-label">
+                    {item.name} <tspan fontWeight="700">{formatYi(finalValue, true)}</tspan>
+                  </text>
+                </>
+              ) : null}
             </g>
           );
         })}
       </svg>
+      {mobile ? (
+        <div className="mobile-chart-legend" aria-label="板块最新资金流">
+          {latest.map((item) => {
+            const color = item.value >= 0 ? "#c83b35" : "#087f64";
+            const isActive = pinnedName === item.name;
+            return (
+              <button
+                key={item.code}
+                type="button"
+                className={isActive ? "is-active" : ""}
+                aria-pressed={isActive}
+                onClick={() => onPinnedName(isActive ? "" : item.name)}
+              >
+                <span className="legend-dot" style={{ backgroundColor: color }} />
+                <span className="legend-name">{item.name}</span>
+                <strong style={{ color }}>{formatYi(item.value, true)}</strong>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }

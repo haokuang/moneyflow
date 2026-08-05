@@ -383,6 +383,10 @@ select:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+.mobile-chart-legend {
+  display: none;
+}
+
 .series-group {
   cursor: pointer;
   transition: opacity 160ms ease;
@@ -1029,8 +1033,62 @@ code {
     gap: 6px;
   }
 
-  .flow-chart {
-    width: 950px;
+  .chart-scroll.is-mobile {
+    overflow-x: hidden;
+    overscroll-behavior-inline: auto;
+  }
+
+  .chart-scroll.is-mobile .flow-chart {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .mobile-chart-legend {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border-top: 1px solid var(--line);
+  }
+
+  .mobile-chart-legend button {
+    min-width: 0;
+    min-height: 42px;
+    padding: 8px 7px;
+    display: grid;
+    grid-template-columns: 7px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 5px;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    background: #fff;
+    color: var(--ink);
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .mobile-chart-legend button:nth-child(odd) {
+    border-right: 1px solid var(--line);
+  }
+
+  .mobile-chart-legend button.is-active {
+    background: #f4f5f7;
+  }
+
+  .legend-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+  }
+
+  .legend-name {
+    overflow: hidden;
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-chart-legend strong {
+    font-size: 9px;
+    font-variant-numeric: tabular-nums;
   }
 
   .bucket-row {
